@@ -1,0 +1,29 @@
+{
+  "name": "bridge-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "bridge-harness": "./dist/mcp-server/index.js",
+    "bridge": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./nats-manager": "./dist/nats-manager/index.js",
+    "./shared": "./dist/shared/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "nats": "^2.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}
