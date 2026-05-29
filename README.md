@@ -75,37 +75,29 @@ bridge.{project}.system        # system events
 - `nats-server` in PATH — install with `brew install nats-server`
 - Pi coding agent with extension support
 
-### Claude Code
+### Claude Code (one command)
 
 ```bash
-cd bridge-harness
-npm install
-npm run build
-claude mcp add bridge-harness node /path/to/bridge-harness/dist/mcp-server/index.js
+npm install -g @cocodrino/bridge-harness
+bridge-harness-setup
 ```
+
+That's it. The setup command automatically:
+- Registers the MCP server in Claude Code
+- Configures the asyncRewake hook so Claude Code reacts to incoming messages automatically
 
 Restart Claude Code. The tools `join_room`, `send`, `read`, `list_agents` will be available.
 
-### asyncRewake hook (optional but recommended)
-
-Add to `~/.claude/settings.json` under `hooks.Stop`:
-
-```json
-{
-  "type": "command",
-  "command": "node /path/to/bridge-harness/hooks/bridge-rewake.js",
-  "asyncRewake": true,
-  "rewakeMessage": "Incoming message from Pi via NATS bridge. Call the `read` tool to read it and respond with `send` if appropriate.",
-  "rewakeSummary": "Incoming message from Pi"
-}
-```
-
 ### Pi Extension
 
-In Pi, load the extension pointing to:
+```bash
+npm install -g @cocodrino/bridge-harness-pi
+```
+
+In Pi, load the extension by pointing to:
 
 ```
-packages/bridge-harness-pi/src/index.ts
+$(npm root -g)/@cocodrino/bridge-harness-pi/src/index.ts
 ```
 
 Pi loads TypeScript extensions via `jiti` — no build step needed.

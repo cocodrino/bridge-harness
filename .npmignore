@@ -1,0 +1,10 @@
+src/
+tests/
+openspec/
+packages/
+.claude/
+*.test.ts
+tsconfig.json
+vitest.config.ts
+.gitignore
+CONTEXT.md
