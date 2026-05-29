@@ -1,6 +1,5 @@
 import { connect, type NatsConnection } from "nats";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 
 const NATS_URL = "nats://localhost:4222";
 const PRESENCE_INTERVAL_MS = 30_000;
@@ -114,11 +113,15 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     name: "agent_bridge",
     label: "Agent Bridge",
     description: "Send messages to other agents via NATS bridge",
-    parameters: Type.Object({
-      action: Type.String({ enum: ["send", "list_agents"], description: "Action to perform" }),
-      to: Type.Optional(Type.String({ description: 'Target, e.g. "room:venflowapp" or "agent:claude-code"' })),
-      message: Type.Optional(Type.String({ description: "Message content" })),
-    }),
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["send", "list_agents"], description: "Action to perform" },
+        to: { type: "string", description: 'Target, e.g. "room:venflowapp" or "agent:claude-code"' },
+        message: { type: "string", description: "Message content" },
+      },
+      required: ["action"],
+    } as any,
     async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
       const { action, to, message } = args as {
         action: string;
