@@ -1,6 +1,6 @@
 {
   "name": "@cocodrino/bridge-harness-pi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi coding agent extension for bridge-harness — real-time NATS communication with Claude Code",
   "type": "module",
   "main": "./src/index.ts",
@@ -13,6 +13,7 @@
   },
   "homepage": "https://github.com/cocodrino/bridge-harness#readme",
   "keywords": [
+    "pi-package",
     "pi-agent",
     "claude-code",
     "nats",
@@ -20,6 +21,9 @@
     "bridge",
     "ai-agents"
   ],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
   "engines": {
     "node": ">=18.0.0"
   },

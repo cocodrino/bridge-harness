@@ -91,16 +91,10 @@ Restart Claude Code. The tools `join_room`, `send`, `read`, `list_agents` will b
 ### Pi Extension
 
 ```bash
-npm install -g @cocodrino/bridge-harness-pi
+pi install npm:@cocodrino/bridge-harness-pi
 ```
 
-In Pi, load the extension by pointing to:
-
-```
-$(npm root -g)/@cocodrino/bridge-harness-pi/src/index.ts
-```
-
-Pi loads TypeScript extensions via `jiti` — no build step needed.
+That's it. Pi downloads the package from npm and loads the extension automatically.
 
 ---
 
