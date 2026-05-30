@@ -5,21 +5,23 @@ import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 
 const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
-const STATE_FILE = join(homedir(), ".bridge-harness-state.json");
 const decoder = new TextDecoder();
 
 function resolveSubject() {
+  // The hook and the MCP server are both children of the same Claude Code process.
+  // Using process.ppid gives us the shared parent PID — unique per Claude Code instance.
+  const stateFile = join(homedir(), `.bridge-harness-state-${process.ppid}.json`);
   try {
-    const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    if (state.canonicalSubject) {
-      process.stderr.write(`[bridge-rewake] Using subject from state file: ${state.canonicalSubject}\n`);
-      return state.canonicalSubject;
+    const state = JSON.parse(readFileSync(stateFile, "utf8"));
+    if (state.dmSubject) {
+      process.stderr.write(`[bridge-rewake] pid=${process.ppid} subject=${state.dmSubject}\n`);
+      return state.dmSubject;
     }
   } catch {}
   // Fallback: use env var or cwd basename
   const project = process.env.BRIDGE_PROJECT ?? basename(process.cwd());
   const subject = `bridge.${project}.dm.claude-code`;
-  process.stderr.write(`[bridge-rewake] State file not found, fallback subject: ${subject}\n`);
+  process.stderr.write(`[bridge-rewake] fallback subject=${subject}\n`);
   return subject;
 }
 
@@ -43,14 +45,14 @@ async function run() {
       const nc = await connect({ servers: NATS_URL });
       backoff = 1000;
 
-      // Re-resolve subject on each reconnect in case MCP restarted with new project
+      // Re-resolve on each reconnect in case the MCP restarted with a new agentId
       const subject = resolveSubject();
       const sub = nc.subscribe(subject);
 
       for await (const msg of sub) {
         const payload = decode(msg.data);
         const content = payload.content ?? String(payload);
-        const from = payload.from ?? "pi";
+        const from = payload.from ?? "unknown";
 
         process.stdout.write(
           JSON.stringify({

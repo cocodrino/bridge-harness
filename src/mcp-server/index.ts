@@ -17,13 +17,14 @@ import { subjects } from "../shared/subjects.js";
 import { type AgentPresence, type RegistryEvent } from "../shared/types.js";
 import { ensureNats } from "../nats-manager/index.js";
 
-const STATE_FILE = join(homedir(), ".bridge-harness-state.json");
+// Per-PPID state file: each Claude Code instance gets its own file
+// process.ppid is the PID of the Claude Code process that spawned this MCP server
+const STATE_FILE = join(homedir(), `.bridge-harness-state-${process.ppid}.json`);
 
 function writeStateFile(project: string, agentId: string) {
-  const canonicalSubject = `bridge.${project}.dm.claude-code`;
   writeFileSync(
     STATE_FILE,
-    JSON.stringify({ project, agentId, canonicalSubject, startedAt: Date.now() }, null, 2),
+    JSON.stringify({ project, agentId, dmSubject: `bridge.${project}.dm.${agentId}`, startedAt: Date.now() }, null, 2),
     "utf8"
   );
 }
