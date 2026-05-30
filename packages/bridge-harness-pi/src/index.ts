@@ -11,8 +11,7 @@ function getProject(): string {
 
 function generateAgentId(base: string): string {
   if (process.env.BRIDGE_AGENT_ID) return process.env.BRIDGE_AGENT_ID;
-  const suffix = Math.random().toString(36).slice(2, 6);
-  return `${base}-${suffix}`;
+  return `${base}-${process.pid}`;
 }
 
 function getDisplayName(fallback: string): string {
