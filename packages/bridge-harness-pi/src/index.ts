@@ -1,19 +1,30 @@
 import { connect, type NatsConnection } from "nats";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const NATS_URL = "nats://localhost:4222";
+const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
 const PRESENCE_INTERVAL_MS = 30_000;
-const PRESENCE_TTL_MS = 60_000;
 
 function getProject(): string {
-  return process.env.BRIDGE_PROJECT ?? require("node:path").basename(process.cwd());
+  const { basename } = require("node:path");
+  return process.env.BRIDGE_PROJECT ?? basename(process.cwd());
 }
 
-function subjects(project: string) {
+function generateAgentId(base: string): string {
+  if (process.env.BRIDGE_AGENT_ID) return process.env.BRIDGE_AGENT_ID;
+  const suffix = Math.random().toString(36).slice(2, 6);
+  return `${base}-${suffix}`;
+}
+
+function getDisplayName(fallback: string): string {
+  return process.env.BRIDGE_DISPLAY_NAME ?? fallback;
+}
+
+function makeSubjects(project: string) {
   return {
     room: (room: string) => `bridge.${project}.room.${room}`,
     dm: (agentId: string) => `bridge.${project}.dm.${agentId}`,
     presence: () => `bridge.${project}.presence`,
+    registry: () => `bridge.${project}.registry`,
     roomWildcard: () => `bridge.${project}.room.*`,
   };
 }
@@ -29,13 +40,43 @@ function decode(data: Uint8Array): unknown {
   return JSON.parse(decoder.decode(data));
 }
 
+interface AgentInfo {
+  agentId: string;
+  displayName: string;
+  rooms: Set<string>;
+}
+
 export default function bridgeExtension(pi: ExtensionAPI) {
   const project = getProject();
-  const sub = subjects(project);
+  const agentId = generateAgentId("pi");
+  const displayName = getDisplayName("Pi Agent");
+  const sub = makeSubjects(project);
+
   let nc: NatsConnection | null = null;
   let presenceInterval: ReturnType<typeof setInterval> | null = null;
   let isProcessingTurn = false;
   const messageQueue: string[] = [];
+  const roster = new Map<string, AgentInfo>();
+
+  function publishRegistry(type: "join" | "leave" | "room-join" | "room-leave", room?: string) {
+    if (!nc) return;
+    nc.publish(sub.registry(), encode({ type, agentId, displayName, room, timestamp: Date.now() }));
+  }
+
+  function applyRegistryEvent(event: {
+    type: string; agentId: string; displayName: string; room?: string;
+  }) {
+    if (event.agentId === agentId) return;
+    if (event.type === "join") {
+      roster.set(event.agentId, { agentId: event.agentId, displayName: event.displayName, rooms: new Set() });
+    } else if (event.type === "leave") {
+      roster.delete(event.agentId);
+    } else if (event.type === "room-join" && event.room) {
+      roster.get(event.agentId)?.rooms.add(event.room);
+    } else if (event.type === "room-leave" && event.room) {
+      roster.get(event.agentId)?.rooms.delete(event.room);
+    }
+  }
 
   function deliverMessage(content: string) {
     pi.sendMessage(
@@ -46,23 +87,22 @@ export default function bridgeExtension(pi: ExtensionAPI) {
 
   function flushQueue() {
     while (messageQueue.length > 0) {
-      const msg = messageQueue.shift()!;
-      deliverMessage(msg);
+      deliverMessage(messageQueue.shift()!);
     }
   }
 
   async function subscribeToIncoming(nc: NatsConnection) {
-    const dmSub = nc.subscribe(sub.dm("pi"));
+    const dmSub = nc.subscribe(sub.dm(agentId));
+    // Also listen on legacy "pi" for backward compat
+    const legacyDmSub = nc.subscribe(sub.dm("pi"));
     const roomSub = nc.subscribe(sub.roomWildcard());
+    const registrySub = nc.subscribe(sub.registry());
 
-    for (const subscription of [dmSub, roomSub]) {
+    for (const subscription of [dmSub, legacyDmSub, roomSub]) {
       (async () => {
         for await (const msg of subscription) {
           try {
-            const payload = decode(msg.data) as {
-              from: string;
-              content: string;
-            };
+            const payload = decode(msg.data) as { from: string; content: string };
             const formatted = `[Bridge] Message from ${payload.from}: ${payload.content}`;
             if (isProcessingTurn) {
               messageQueue.push(formatted);
@@ -73,17 +113,27 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         }
       })();
     }
+
+    (async () => {
+      for await (const msg of registrySub) {
+        try {
+          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; room?: string });
+        } catch {}
+      }
+    })();
   }
 
   pi.on("session_start", async () => {
     try {
       nc = await connect({ servers: NATS_URL });
-      const presenceSub = sub.presence();
 
-      nc.publish(presenceSub, encode({ agent: "pi", status: "active" }));
+      // Register identity
+      nc.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
+      publishRegistry("join");
+      publishRegistry("room-join", "*");
 
       presenceInterval = setInterval(() => {
-        nc?.publish(presenceSub, encode({ agent: "pi", status: "active" }));
+        nc?.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
       }, PRESENCE_INTERVAL_MS);
 
       await subscribeToIncoming(nc);
@@ -103,7 +153,8 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       presenceInterval = null;
     }
     if (nc) {
-      nc.publish(sub.presence(), encode({ agent: "pi", status: "offline" }));
+      publishRegistry("leave");
+      nc.publish(sub.presence(), encode({ agent: agentId, status: "offline" }));
       await nc.drain();
       nc = null;
     }
@@ -117,17 +168,13 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       type: "object",
       properties: {
         action: { type: "string", enum: ["send", "list_agents"], description: "Action to perform" },
-        to: { type: "string", description: 'Target, e.g. "room:venflowapp" or "agent:claude-code"' },
+        to: { type: "string", description: 'Target: "room:venflowapp" or "agent:claude-code-9x2k"' },
         message: { type: "string", description: "Message content" },
       },
       required: ["action"],
     } as any,
     async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
-      const { action, to, message } = args as {
-        action: string;
-        to?: string;
-        message?: string;
-      };
+      const { action, to, message } = args as { action: string; to?: string; message?: string };
 
       if (!nc) {
         return {
@@ -139,20 +186,22 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       if (action === "send" && to && message) {
         const [type, target] = to.split(":");
         const subject = type === "room" ? sub.room(target) : sub.dm(target);
-        nc.publish(
-          subject,
-          encode({ from: "pi", content: message, timestamp: Date.now() })
-        );
+        nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
         return {
-          content: [{ type: "text", text: JSON.stringify({ ok: true, sent: to }) }],
-          details: { ok: true, sent: to },
+          content: [{ type: "text", text: JSON.stringify({ ok: true, sent: to, from: agentId }) }],
+          details: { ok: true, sent: to, from: agentId },
         };
       }
 
       if (action === "list_agents") {
+        const agents = [...roster.values()].map(a => ({
+          agentId: a.agentId,
+          displayName: a.displayName,
+          rooms: [...a.rooms],
+        }));
         return {
-          content: [{ type: "text", text: JSON.stringify({ info: "Use bridge agents CLI for presence info" }) }],
-          details: { info: "Use bridge agents CLI for presence info" },
+          content: [{ type: "text", text: JSON.stringify(agents, null, 2) }],
+          details: { agents },
         };
       }
 

@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { connect, type NatsConnection, type Subscription } from "nats";
+import { connect, type NatsConnection } from "nats";
 import { z } from "zod";
-import { getProject, NATS_URL, PRESENCE_TTL_MS } from "../shared/config.js";
+import {
+  getProject,
+  NATS_URL,
+  PRESENCE_TTL_MS,
+  generateAgentId,
+  getDisplayName,
+} from "../shared/config.js";
 import { subjects } from "../shared/subjects.js";
+import { type AgentPresence, type RegistryEvent } from "../shared/types.js";
 import { ensureNats } from "../nats-manager/index.js";
 
 interface InboxMessage {
@@ -13,16 +20,16 @@ interface InboxMessage {
   timestamp: number;
 }
 
-interface AgentPresence {
-  agentId: string;
-  lastSeen: number;
-}
-
 const inbox: InboxMessage[] = [];
 const agentPresence = new Map<string, AgentPresence>();
 const activeSubscriptions = new Set<string>();
 let nc: NatsConnection;
+
 const project = getProject();
+const agentId = generateAgentId("claude-code");
+const displayName = getDisplayName("Claude Code");
+const joinedAt = Date.now();
+
 const codec = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -34,52 +41,147 @@ function decode(data: Uint8Array): unknown {
   return JSON.parse(decoder.decode(data));
 }
 
-async function setupPresenceListener(nc: NatsConnection) {
-  const sub = nc.subscribe(subjects.presence(project));
+function publishRegistry(event: Omit<RegistryEvent, "agentId" | "displayName" | "timestamp">) {
+  nc.publish(
+    subjects.registry(project),
+    encode({ ...event, agentId, displayName, timestamp: Date.now() } satisfies RegistryEvent)
+  );
+}
+
+function applyRegistryEvent(event: RegistryEvent) {
+  if (event.agentId === agentId) return;
+
+  if (event.type === "join") {
+    agentPresence.set(event.agentId, {
+      agentId: event.agentId,
+      displayName: event.displayName,
+      rooms: new Set(),
+      joinedAt: event.timestamp,
+      lastSeen: event.timestamp,
+    });
+  } else if (event.type === "leave") {
+    agentPresence.delete(event.agentId);
+  } else if (event.type === "room-join" && event.room) {
+    const agent = agentPresence.get(event.agentId);
+    if (agent) agent.rooms.add(event.room);
+  } else if (event.type === "room-leave" && event.room) {
+    const agent = agentPresence.get(event.agentId);
+    if (agent) agent.rooms.delete(event.room);
+  }
+}
+
+async function setupListeners(nc: NatsConnection) {
+  // Presence (legacy + lastSeen updates)
+  const presenceSub = nc.subscribe(subjects.presence(project));
   (async () => {
-    for await (const msg of sub) {
+    for await (const msg of presenceSub) {
       try {
-        const payload = decode(msg.data) as {
-          agent: string;
-          status: string;
-        };
+        const payload = decode(msg.data) as { agent: string; status: string };
         if (payload.status === "offline") {
           agentPresence.delete(payload.agent);
         } else {
-          agentPresence.set(payload.agent, {
-            agentId: payload.agent,
-            lastSeen: Date.now(),
-          });
+          const existing = agentPresence.get(payload.agent);
+          if (existing) {
+            existing.lastSeen = Date.now();
+          } else {
+            agentPresence.set(payload.agent, {
+              agentId: payload.agent,
+              displayName: payload.agent,
+              rooms: new Set(),
+              joinedAt: Date.now(),
+              lastSeen: Date.now(),
+            });
+          }
         }
       } catch {}
     }
   })();
-}
 
-async function subscribeToRoom(room: string, sub?: Subscription) {
-  const roomSub = sub ?? nc.subscribe(subjects.room(project, room));
-  activeSubscriptions.add(room);
+  // Registry (identity events)
+  const registrySub = nc.subscribe(subjects.registry(project));
   (async () => {
-    for await (const msg of roomSub) {
+    for await (const msg of registrySub) {
       try {
-        const payload = decode(msg.data) as {
-          from: string;
-          content: string;
-        };
-        inbox.push({
-          from: payload.from,
-          content: payload.content,
-          timestamp: Date.now(),
-        });
+        const event = decode(msg.data) as RegistryEvent;
+        applyRegistryEvent(event);
       } catch {}
     }
   })();
+
+  // Own DM inbox
+  const dmSub = nc.subscribe(subjects.dm(project, agentId));
+  // Also listen on legacy "claude-code" for backward compat
+  const legacyDmSub = nc.subscribe(subjects.dm(project, "claude-code"));
+  for (const sub of [dmSub, legacyDmSub]) {
+    (async () => {
+      for await (const msg of sub) {
+        try {
+          const payload = decode(msg.data) as { from: string; content: string };
+          inbox.push({ from: payload.from, content: payload.content, timestamp: Date.now() });
+        } catch {}
+      }
+    })();
+  }
 }
 
-const server = new McpServer({
-  name: "bridge-harness",
-  version: "0.1.0",
-});
+async function subscribeToRoom(room: string) {
+  if (activeSubscriptions.has(room)) return;
+  activeSubscriptions.add(room);
+  const roomSub = nc.subscribe(subjects.room(project, room));
+  (async () => {
+    for await (const msg of roomSub) {
+      try {
+        const payload = decode(msg.data) as { from: string; content: string };
+        inbox.push({ from: payload.from, content: payload.content, timestamp: Date.now() });
+      } catch {}
+    }
+  })();
+  publishRegistry({ type: "room-join", room });
+}
+
+// ---- MCP Server ----
+
+const server = new McpServer({ name: "bridge-harness", version: "0.1.0" });
+
+server.registerTool(
+  "whoami",
+  {
+    description: "Get Claude Code's identity in the bridge",
+    inputSchema: z.object({}),
+  },
+  async () => ({
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        agentId,
+        displayName,
+        project,
+        rooms: [...activeSubscriptions],
+      }, null, 2),
+    }],
+  })
+);
+
+server.registerTool(
+  "who_is_in",
+  {
+    description: "List agents connected to a specific room",
+    inputSchema: z.object({ room: z.string() }),
+  },
+  async ({ room }) => {
+    const now = Date.now();
+    const inRoom = [...agentPresence.values()].filter(
+      (a) => now - a.lastSeen < PRESENCE_TTL_MS && a.rooms.has(room)
+    );
+    return {
+      content: [{ type: "text", text: JSON.stringify(inRoom.map(a => ({
+        agentId: a.agentId,
+        displayName: a.displayName,
+        lastSeen: a.lastSeen,
+      })), null, 2) }],
+    };
+  }
+);
 
 server.registerTool(
   "join_room",
@@ -88,9 +190,6 @@ server.registerTool(
     inputSchema: z.object({ room: z.string() }),
   },
   async ({ room }) => {
-    if (activeSubscriptions.has(room)) {
-      return { content: [{ type: "text", text: `Already in room: ${room}` }] };
-    }
     await subscribeToRoom(room);
     return { content: [{ type: "text", text: `Joined room: ${room}` }] };
   }
@@ -101,21 +200,16 @@ server.registerTool(
   {
     description: "Send a message to a room or agent",
     inputSchema: z.object({
-      to: z.string().describe('e.g. "room:venflowapp" or "agent:pi"'),
+      to: z.string().describe('e.g. "room:venflowapp" or "agent:pi-a3f7"'),
       message: z.string(),
     }),
   },
   async ({ to, message }) => {
     const [type, target] = to.split(":");
-    const subject =
-      type === "room"
-        ? subjects.room(project, target)
-        : subjects.dm(project, target);
-
-    nc.publish(
-      subject,
-      encode({ from: "claude-code", content: message, timestamp: Date.now() })
-    );
+    const subject = type === "room"
+      ? subjects.room(project, target)
+      : subjects.dm(project, target);
+    nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
     return { content: [{ type: "text", text: `Sent to ${to}` }] };
   }
 );
@@ -128,9 +222,7 @@ server.registerTool(
   },
   async () => {
     const messages = inbox.splice(0);
-    return {
-      content: [{ type: "text", text: JSON.stringify(messages, null, 2) }],
-    };
+    return { content: [{ type: "text", text: JSON.stringify(messages, null, 2) }] };
   }
 );
 
@@ -142,12 +234,15 @@ server.registerTool(
   },
   async () => {
     const now = Date.now();
-    const active = [...agentPresence.values()].filter(
-      (a) => now - a.lastSeen < PRESENCE_TTL_MS
-    );
-    return {
-      content: [{ type: "text", text: JSON.stringify(active, null, 2) }],
-    };
+    const active = [...agentPresence.values()]
+      .filter((a) => now - a.lastSeen < PRESENCE_TTL_MS)
+      .map((a) => ({
+        agentId: a.agentId,
+        displayName: a.displayName,
+        rooms: [...a.rooms],
+        lastSeen: a.lastSeen,
+      }));
+    return { content: [{ type: "text", text: JSON.stringify(active, null, 2) }] };
   }
 );
 
@@ -155,37 +250,27 @@ async function main() {
   await ensureNats();
   nc = await connect({ servers: NATS_URL });
 
-  // Subscribe to own DM inbox
-  const dmSub = nc.subscribe(subjects.dm(project, "claude-code"));
-  (async () => {
-    for await (const msg of dmSub) {
-      try {
-        const payload = decode(msg.data) as {
-          from: string;
-          content: string;
-        };
-        inbox.push({
-          from: payload.from,
-          content: payload.content,
-          timestamp: Date.now(),
-        });
-      } catch {}
-    }
-  })();
+  await setupListeners(nc);
 
-  await setupPresenceListener(nc);
+  // Announce presence + identity
+  nc.publish(subjects.presence(project), encode({ agent: agentId, status: "active" }));
+  publishRegistry({ type: "join" });
 
-  // Announce presence
-  nc.publish(
-    subjects.presence(project),
-    encode({ agent: "claude-code", status: "active" })
-  );
+  // Heartbeat
+  setInterval(() => {
+    nc.publish(subjects.presence(project), encode({ agent: agentId, status: "active" }));
+  }, 30_000);
+
+  function cleanup() {
+    publishRegistry({ type: "leave" });
+    nc.drain().catch(() => {});
+  }
+  process.on("exit", cleanup);
+  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+  process.on("SIGINT", () => { cleanup(); process.exit(0); });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main().catch((err) => { console.error(err); process.exit(1); });
