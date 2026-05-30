@@ -1,11 +1,27 @@
 #!/usr/bin/env node
 import { connect, ErrorCode } from "nats";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 
-const project = process.env.BRIDGE_PROJECT ?? basename(process.cwd());
 const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
-const subject = `bridge.${project}.dm.claude-code`;
+const STATE_FILE = join(homedir(), ".bridge-harness-state.json");
 const decoder = new TextDecoder();
+
+function resolveSubject() {
+  try {
+    const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+    if (state.canonicalSubject) {
+      process.stderr.write(`[bridge-rewake] Using subject from state file: ${state.canonicalSubject}\n`);
+      return state.canonicalSubject;
+    }
+  } catch {}
+  // Fallback: use env var or cwd basename
+  const project = process.env.BRIDGE_PROJECT ?? basename(process.cwd());
+  const subject = `bridge.${project}.dm.claude-code`;
+  process.stderr.write(`[bridge-rewake] State file not found, fallback subject: ${subject}\n`);
+  return subject;
+}
 
 function decode(data) {
   try {
@@ -27,6 +43,8 @@ async function run() {
       const nc = await connect({ servers: NATS_URL });
       backoff = 1000;
 
+      // Re-resolve subject on each reconnect in case MCP restarted with new project
+      const subject = resolveSubject();
       const sub = nc.subscribe(subject);
 
       for await (const msg of sub) {

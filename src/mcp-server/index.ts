@@ -3,6 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { connect, type NatsConnection } from "nats";
 import { z } from "zod";
+import { writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   getProject,
   NATS_URL,
@@ -13,6 +16,23 @@ import {
 import { subjects } from "../shared/subjects.js";
 import { type AgentPresence, type RegistryEvent } from "../shared/types.js";
 import { ensureNats } from "../nats-manager/index.js";
+
+const STATE_FILE = join(homedir(), ".bridge-harness-state.json");
+
+function writeStateFile(project: string, agentId: string) {
+  const canonicalSubject = `bridge.${project}.dm.claude-code`;
+  writeFileSync(
+    STATE_FILE,
+    JSON.stringify({ project, agentId, canonicalSubject, startedAt: Date.now() }, null, 2),
+    "utf8"
+  );
+}
+
+function deleteStateFile() {
+  try {
+    if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE);
+  } catch {}
+}
 
 interface InboxMessage {
   from: string;
@@ -252,6 +272,9 @@ async function main() {
 
   await setupListeners(nc);
 
+  // Write state file so the rewake hook knows what subject to use
+  writeStateFile(project, agentId);
+
   // Announce presence + identity
   nc.publish(subjects.presence(project), encode({ agent: agentId, status: "active" }));
   publishRegistry({ type: "join" });
@@ -263,6 +286,7 @@ async function main() {
 
   function cleanup() {
     publishRegistry({ type: "leave" });
+    deleteStateFile();
     nc.drain().catch(() => {});
   }
   process.on("exit", cleanup);

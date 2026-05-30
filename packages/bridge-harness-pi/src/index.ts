@@ -93,12 +93,12 @@ export default function bridgeExtension(pi: ExtensionAPI) {
 
   async function subscribeToIncoming(nc: NatsConnection) {
     const dmSub = nc.subscribe(sub.dm(agentId));
-    // Also listen on legacy "pi" for backward compat
-    const legacyDmSub = nc.subscribe(sub.dm("pi"));
+    // Always subscribe to canonical "pi" so agents can reach us without knowing the dynamic ID
+    const canonicalDmSub = nc.subscribe(sub.dm("pi"));
     const roomSub = nc.subscribe(sub.roomWildcard());
     const registrySub = nc.subscribe(sub.registry());
 
-    for (const subscription of [dmSub, legacyDmSub, roomSub]) {
+    for (const subscription of [dmSub, canonicalDmSub, roomSub]) {
       (async () => {
         for await (const msg of subscription) {
           try {
