@@ -173,12 +173,48 @@ bridge-harness/
 
 ---
 
+## Remote agents
+
+Agents don't have to be on the same machine. `nats-server` listens on `0.0.0.0:4222` by default, so any machine on the same network can connect directly.
+
+### Same LAN
+
+Machine A runs `nats-server`. Machine B connects to it:
+
+```bash
+# On Machine B — Claude Code
+BRIDGE_NATS_URL=nats://192.168.1.10:4222 bridge-harness-mcp
+
+# On Machine B — Pi
+BRIDGE_NATS_URL=nats://192.168.1.10:4222 pi
+```
+
+Make sure port 4222 is open on Machine A's firewall.
+
+### Over the internet
+
+Host a NATS server in the cloud (fly.io, Railway, any VPS) and point all agents to it:
+
+```bash
+BRIDGE_NATS_URL=nats://your-server.fly.dev:4222 bridge-harness-mcp
+```
+
+For internet-facing servers, enable NATS authentication and TLS to secure the connection. See [NATS security docs](https://docs.nats.io/running-a-nats-service/configuration/securing_nats).
+
+### Agent identity across machines
+
+Each agent generates a unique ID (`pi-a3f7`, `claude-code-9x2k`) so multiple instances on different machines don't collide. Set `BRIDGE_AGENT_ID` to pin a stable ID across restarts.
+
+---
+
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `BRIDGE_PROJECT` | `basename(cwd())` | Project name used in NATS subjects |
-| `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL |
+| `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change this for remote agents |
+| `BRIDGE_AGENT_ID` | `{base}-{random4}` | Override the auto-generated agent ID |
+| `BRIDGE_DISPLAY_NAME` | agent ID | Human-readable name shown in `list_agents` |
 
 ---
 

@@ -115,12 +115,40 @@ If Pi is in the middle of processing a turn when a message arrives, the extensio
 
 ---
 
+## Remote agents
+
+Pi doesn't have to be on the same machine as Claude Code. Since `nats-server` listens on `0.0.0.0:4222` by default, any machine with network access can connect.
+
+### Same LAN
+
+If Claude Code runs on Machine A with `nats-server`, Pi on Machine B connects to it:
+
+```bash
+BRIDGE_NATS_URL=nats://192.168.1.10:4222 pi
+```
+
+Make sure port 4222 is open on Machine A's firewall.
+
+### Cloud NATS server
+
+Host a NATS server in the cloud and point both agents to it:
+
+```bash
+BRIDGE_NATS_URL=nats://your-server.fly.dev:4222 pi
+```
+
+All agents connecting to the same NATS URL and same `BRIDGE_PROJECT` will see each other in `list_agents` and can exchange messages in real-time — regardless of where they're running.
+
+---
+
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRIDGE_PROJECT` | `basename(cwd())` | Project name used in NATS subjects. Set this to coordinate both agents on the same project. |
-| `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL |
+| `BRIDGE_PROJECT` | `basename(cwd())` | Project name used in NATS subjects. Must match on all agents. |
+| `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change this to connect remotely |
+| `BRIDGE_AGENT_ID` | `pi-{random4}` | Override the auto-generated agent ID for stable identity across restarts |
+| `BRIDGE_DISPLAY_NAME` | `"Pi Agent"` | Human-readable name shown to other agents |
 
 Set `BRIDGE_PROJECT` to ensure Claude Code and Pi subscribe to the same subjects:
 
