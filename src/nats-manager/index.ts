@@ -1,9 +1,30 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
 import {
   NATS_RETRY_INTERVAL_MS,
   NATS_START_TIMEOUT_MS,
 } from "../shared/config.js";
+
+export function detectNatsInstalled(): boolean {
+  try {
+    execSync("which nats-server", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getNatsInstallInstructions(): string {
+  if (process.platform === "darwin") {
+    return "brew install nats-server";
+  }
+  return [
+    "# Option 1 (Go):",
+    "  go install github.com/nats-io/nats-server/v2@latest",
+    "# Option 2 (direct download):",
+    "  https://github.com/nats-io/nats-server/releases/latest",
+  ].join("\n");
+}
 
 let natsProcess: ChildProcess | null = null;
 
@@ -29,7 +50,7 @@ export function startNatsServer(): ChildProcess {
   proc.on("error", (err) => {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(
-        "nats-server not found in PATH. Install it with: brew install nats-server"
+        `nats-server not found in PATH.\n\nInstall it with:\n  ${getNatsInstallInstructions()}`
       );
     }
     throw err;

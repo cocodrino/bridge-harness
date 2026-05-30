@@ -2,7 +2,18 @@
 import { connect } from "nats";
 import { getProject, NATS_URL, PRESENCE_TTL_MS } from "../shared/config.js";
 import { subjects } from "../shared/subjects.js";
-import { ensureNats } from "../nats-manager/index.js";
+import { checkNatsRunning } from "../nats-manager/index.js";
+
+async function requireNats(): Promise<void> {
+  if (!(await checkNatsRunning())) {
+    process.stderr.write(
+      "✗ NATS is not running on localhost:4222\n" +
+      "  Start it with: nats-server &\n" +
+      "  Or set BRIDGE_NATS_URL to point to another server.\n"
+    );
+    process.exit(1);
+  }
+}
 
 const project = getProject();
 const sub = subjects;
@@ -33,7 +44,7 @@ async function cmdSend(args: string[]) {
     process.exit(1);
   }
 
-  await ensureNats();
+  await requireNats();
   const nc = await connect({ servers: NATS_URL });
 
   let subject: string;
@@ -59,7 +70,7 @@ async function cmdSend(args: string[]) {
 async function cmdRead(args: string[]) {
   const watch = args.includes("--watch");
 
-  await ensureNats();
+  await requireNats();
   const nc = await connect({ servers: NATS_URL });
   const inbox = nc.subscribe(sub.dm(project, "cli"));
 
@@ -92,7 +103,7 @@ async function cmdRead(args: string[]) {
 }
 
 async function cmdAgents() {
-  await ensureNats();
+  await requireNats();
   const nc = await connect({ servers: NATS_URL });
 
   const agentMap = new Map<string, { lastSeen: number; status: string }>();

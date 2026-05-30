@@ -4,6 +4,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
+import {
+  detectNatsInstalled,
+  getNatsInstallInstructions,
+  checkNatsRunning,
+  startNatsServer,
+} from "../nats-manager/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOME = homedir();
@@ -37,6 +44,17 @@ function readJson(path: string): Record<string, unknown> {
 
 function writeJson(path: string, data: unknown) {
   writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+async function ask(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim() === "" || answer.trim().toLowerCase().startsWith("y"));
+    });
+  });
 }
 
 function isClaudeInstalled(): boolean {
@@ -153,6 +171,43 @@ function setupHook(): boolean {
   return true;
 }
 
+async function setupNats(): Promise<void> {
+  if (!detectNatsInstalled()) {
+    error("nats-server not found in PATH.\n");
+    log("  Install it with:\n");
+    getNatsInstallInstructions().split("\n").forEach((line) => log(`    ${line}`));
+    log("");
+    process.exit(1);
+  }
+  success("nats-server detected");
+
+  if (await checkNatsRunning()) {
+    success("NATS server is running");
+    return;
+  }
+
+  warn("NATS server is not running");
+
+  const shouldStart = await ask("  Start it now? [Y/n] ");
+
+  if (shouldStart) {
+    try {
+      startNatsServer();
+      // Wait briefly for it to be ready
+      await new Promise((r) => setTimeout(r, 800));
+      if (await checkNatsRunning()) {
+        success("NATS server started");
+      } else {
+        warn("NATS server may not have started — continuing anyway");
+      }
+    } catch (err) {
+      warn(`Could not start NATS: ${(err as Error).message}`);
+    }
+  } else {
+    log("\n  To start NATS manually:\n    nats-server &\n");
+  }
+}
+
 async function main() {
   log("\n🌉 bridge-harness setup\n");
 
@@ -161,6 +216,8 @@ async function main() {
     process.exit(1);
   }
   success("Claude Code detected");
+
+  await setupNats();
 
   setupMcp();
   setupHook();
