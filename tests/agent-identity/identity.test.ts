@@ -7,16 +7,17 @@ describe("generateAgentId", () => {
   beforeEach(() => { process.env = { ...originalEnv }; });
   afterEach(() => { process.env = originalEnv; });
 
-  it("generates id with correct format", () => {
+  it("generates id with correct format (base-ppid)", () => {
     delete process.env.BRIDGE_AGENT_ID;
     const id = generateAgentId("pi");
-    expect(id).toMatch(/^pi-[a-z0-9]{4}$/);
+    expect(id).toMatch(/^pi-\d+$/);
   });
 
-  it("generates unique ids on multiple calls", () => {
+  it("generates same id on multiple calls (deterministic via ppid)", () => {
     delete process.env.BRIDGE_AGENT_ID;
-    const ids = new Set(Array.from({ length: 20 }, () => generateAgentId("pi")));
-    expect(ids.size).toBeGreaterThan(1);
+    const ids = new Set(Array.from({ length: 5 }, () => generateAgentId("pi")));
+    // PPID-based: same parent process = same ID always
+    expect(ids.size).toBe(1);
   });
 
   it("respects BRIDGE_AGENT_ID env var", () => {

@@ -6,7 +6,8 @@ export function getProject(): string {
 
 export function generateAgentId(base: string): string {
   if (process.env.BRIDGE_AGENT_ID) return process.env.BRIDGE_AGENT_ID;
-  const suffix = Math.random().toString(36).slice(2, 6);
+  // Use PPID so the asyncRewake hook (same parent process) can derive the same ID independently
+  const suffix = process.ppid ?? Math.random().toString(36).slice(2, 6);
   return `${base}-${suffix}`;
 }
 

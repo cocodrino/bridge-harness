@@ -1,27 +1,19 @@
 #!/usr/bin/env node
 import { connect, ErrorCode } from "nats";
-import { basename, join } from "node:path";
-import { homedir } from "node:os";
-import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 
 const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
 const decoder = new TextDecoder();
 
+// Both the MCP server and this hook are children of the same Claude Code process.
+// Using process.ppid gives us the shared parent PID — unique per Claude Code instance.
+// The MCP server generates its agentId as `claude-code-${process.ppid}`, so we can
+// derive the exact same subject here without any files or coordination.
 function resolveSubject() {
-  // The hook and the MCP server are both children of the same Claude Code process.
-  // Using process.ppid gives us the shared parent PID — unique per Claude Code instance.
-  const stateFile = join(homedir(), `.bridge-harness-state-${process.ppid}.json`);
-  try {
-    const state = JSON.parse(readFileSync(stateFile, "utf8"));
-    if (state.dmSubject) {
-      process.stderr.write(`[bridge-rewake] pid=${process.ppid} subject=${state.dmSubject}\n`);
-      return state.dmSubject;
-    }
-  } catch {}
-  // Fallback: use env var or cwd basename
   const project = process.env.BRIDGE_PROJECT ?? basename(process.cwd());
-  const subject = `bridge.${project}.dm.claude-code`;
-  process.stderr.write(`[bridge-rewake] fallback subject=${subject}\n`);
+  const agentId = process.env.BRIDGE_AGENT_ID ?? `claude-code-${process.ppid}`;
+  const subject = `bridge.${project}.dm.${agentId}`;
+  process.stderr.write(`[bridge-rewake] ppid=${process.ppid} subject=${subject}\n`);
   return subject;
 }
 
@@ -45,7 +37,6 @@ async function run() {
       const nc = await connect({ servers: NATS_URL });
       backoff = 1000;
 
-      // Re-resolve on each reconnect in case the MCP restarted with a new agentId
       const subject = resolveSubject();
       const sub = nc.subscribe(subject);
 
