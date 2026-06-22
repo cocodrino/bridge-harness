@@ -1,1 +1,0 @@
-/Users/carloslagunamedina/Downloads/proj/bridge-harness/packages/bridge-harness-pi/src/index.ts
