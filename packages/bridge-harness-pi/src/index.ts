@@ -49,8 +49,48 @@ function generateAgentId(base: string): string {
   return `${base}-${process.pid}`;
 }
 
+// When running under cmux, label the agent with the current surface name so multiple
+// Pi instances are distinguishable on the bridge. BRIDGE_DISPLAY_NAME always wins.
+function getCmuxSurfaceName(): string | null {
+  const surfaceId = process.env.CMUX_SURFACE_ID;
+  if (!surfaceId) return null;
+  const bin = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
+  try {
+    const { execFileSync } = require("node:child_process");
+    const out: string = execFileSync(bin, ["tree", "--all", "--json"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let raw: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const n = node as Record<string, unknown>;
+      if (n.here === true && typeof n.title === "string") raw = n.title as string;
+      for (const key of Object.keys(n)) {
+        const v = n[key];
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === "object") walk(v);
+      }
+    };
+    walk(JSON.parse(out));
+    // Custom name only if it's a short slug, not a dynamic agent task title.
+    if (raw) {
+      const startsWithGlyph = /^[^\p{L}\p{N}]/u.test(raw);
+      const clean = (raw as string).replace(/\s+/g, " ").trim();
+      if (!startsWithGlyph && clean.length > 0 && clean.length <= 24 && clean.split(" ").length <= 2) {
+        return clean;
+      }
+    }
+  } catch {
+    // cmux CLI unavailable — fall through to the id-based label
+  }
+  return `cmux:${surfaceId.slice(0, 8).toLowerCase()}`;
+}
+
 function getDisplayName(fallback: string): string {
-  return process.env.BRIDGE_DISPLAY_NAME ?? fallback;
+  if (process.env.BRIDGE_DISPLAY_NAME) return process.env.BRIDGE_DISPLAY_NAME;
+  const surface = getCmuxSurfaceName();
+  return surface ? `${fallback} @ ${surface}` : fallback;
 }
 
 function makeSubjects(project: string) {

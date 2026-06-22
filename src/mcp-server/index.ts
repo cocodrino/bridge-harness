@@ -286,13 +286,29 @@ async function main() {
     nc.publish(subjects.presence(project), encode({ agent: agentId, status: "active" }));
   }, 30_000);
 
+  let cleanedUp = false;
   function cleanup() {
+    if (cleanedUp) return;
+    cleanedUp = true;
     publishRegistry({ type: "leave" });
     nc.drain().catch(() => {});
   }
   process.on("exit", cleanup);
   process.on("SIGTERM", () => { cleanup(); process.exit(0); });
   process.on("SIGINT", () => { cleanup(); process.exit(0); });
+
+  // Parent-death watchdog: if Claude Code exits without signaling us (crash or force
+  // kill), this process is reparented to launchd/init (ppid becomes 1). Detect that
+  // and exit cleanly so we don't linger as a zombie agent on the bridge.
+  const initialPpid = process.ppid;
+  if (initialPpid !== 1) {
+    setInterval(() => {
+      if (process.ppid === 1 || process.ppid !== initialPpid) {
+        cleanup();
+        process.exit(0);
+      }
+    }, 5000);
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
