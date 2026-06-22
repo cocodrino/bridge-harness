@@ -5,8 +5,21 @@ const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
 const PRESENCE_INTERVAL_MS = 30_000;
 
 function getProject(): string {
+  if (process.env.BRIDGE_PROJECT) return process.env.BRIDGE_PROJECT;
   const { basename } = require("node:path");
-  return process.env.BRIDGE_PROJECT ?? basename(process.cwd());
+  // Use the git worktree root so each worktree gets its own isolated namespace,
+  // stable regardless of which subdirectory the agent launches from.
+  try {
+    const { execFileSync } = require("node:child_process");
+    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (top) return basename(top);
+  } catch {
+    // not a git repo, or git unavailable — fall back to the cwd name
+  }
+  return basename(process.cwd());
 }
 
 function generateAgentId(base: string): string {
@@ -45,6 +58,12 @@ interface AgentInfo {
   rooms: Set<string>;
 }
 
+interface InboxMessage {
+  from: string;
+  content: string;
+  timestamp: number;
+}
+
 export default function bridgeExtension(pi: ExtensionAPI) {
   const project = getProject();
   const agentId = generateAgentId("pi");
@@ -54,18 +73,48 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   let nc: NatsConnection | null = null;
   let presenceInterval: ReturnType<typeof setInterval> | null = null;
   let isProcessingTurn = false;
-  const messageQueue: string[] = [];
+  // Pending messages that arrived mid-turn. Drained by `read` or flushed on agent_end.
+  const inbox: InboxMessage[] = [];
   const roster = new Map<string, AgentInfo>();
+  // Pi receives every room via the wildcard subscription (for delivery), but for
+  // *presence* it joins the project room by default — the shared lobby other agents
+  // can find it in. Explicit join_room calls add more rooms here.
+  const joinedRooms = new Set<string>([project]);
 
-  function publishRegistry(type: "join" | "leave" | "room-join" | "room-leave", room?: string) {
+  function publishRegistry(
+    type: "join" | "leave" | "room-join" | "room-leave" | "who-there",
+    room?: string,
+  ) {
     if (!nc) return;
     nc.publish(sub.registry(), encode({ type, agentId, displayName, room, timestamp: Date.now() }));
   }
 
+  // Identity response to a who-there query, carrying every room we're in.
+  function publishHere() {
+    if (!nc) return;
+    nc.publish(
+      sub.registry(),
+      encode({ type: "here", agentId, displayName, rooms: [...joinedRooms], timestamp: Date.now() }),
+    );
+  }
+
   function applyRegistryEvent(event: {
-    type: string; agentId: string; displayName: string; room?: string;
+    type: string; agentId: string; displayName: string; room?: string; rooms?: string[];
   }) {
     if (event.agentId === agentId) return;
+    if (event.type === "who-there") {
+      // A peer is discovering — answer with our identity.
+      publishHere();
+      return;
+    }
+    if (event.type === "here") {
+      roster.set(event.agentId, {
+        agentId: event.agentId,
+        displayName: event.displayName,
+        rooms: new Set(event.rooms ?? []),
+      });
+      return;
+    }
     if (event.type === "join") {
       roster.set(event.agentId, { agentId: event.agentId, displayName: event.displayName, rooms: new Set() });
     } else if (event.type === "leave") {
@@ -78,16 +127,33 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   }
 
   function deliverMessage(content: string) {
+    // We're about to trigger (or steer into) a turn, so mark it active. This makes
+    // subsequent incoming messages buffer instead of interrupting. Reset on agent_end.
+    isProcessingTurn = true;
     pi.sendMessage(
       { content, customType: "bridge-delivery", display: false },
       { triggerTurn: true, deliverAs: "steer" }
     );
   }
 
-  function flushQueue() {
-    while (messageQueue.length > 0) {
-      deliverMessage(messageQueue.shift()!);
-    }
+  function formatMessage(msg: InboxMessage): string {
+    return `[Bridge] Message from ${msg.from}: ${msg.content}`;
+  }
+
+  // Deliver every buffered message as a single steer, emptying the inbox.
+  function flushInbox() {
+    if (inbox.length === 0) return;
+    const batch = inbox.splice(0);
+    deliverMessage(batch.map(formatMessage).join("\n"));
+  }
+
+  function handleIncoming(payload: { from: string; content: string }) {
+    const msg: InboxMessage = { from: payload.from, content: payload.content, timestamp: Date.now() };
+    inbox.push(msg);
+    // Idle → wake the agent immediately (preserves push behavior). Mid-turn → leave
+    // it buffered so we don't interrupt; the agent pulls it via `read` or gets it
+    // flushed on agent_end.
+    if (!isProcessingTurn) flushInbox();
   }
 
   async function subscribeToIncoming(nc: NatsConnection) {
@@ -101,13 +167,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       (async () => {
         for await (const msg of subscription) {
           try {
-            const payload = decode(msg.data) as { from: string; content: string };
-            const formatted = `[Bridge] Message from ${payload.from}: ${payload.content}`;
-            if (isProcessingTurn) {
-              messageQueue.push(formatted);
-            } else {
-              deliverMessage(formatted);
-            }
+            handleIncoming(decode(msg.data) as { from: string; content: string });
           } catch {}
         }
       })();
@@ -116,7 +176,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     (async () => {
       for await (const msg of registrySub) {
         try {
-          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; room?: string });
+          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; room?: string; rooms?: string[] });
         } catch {}
       }
     })();
@@ -129,13 +189,18 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       // Register identity
       nc.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
       publishRegistry("join");
-      publishRegistry("room-join", "*");
+      // Join the project room (shared lobby) by default for presence.
+      publishRegistry("room-join", project);
 
       presenceInterval = setInterval(() => {
         nc?.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
       }, PRESENCE_INTERVAL_MS);
 
       await subscribeToIncoming(nc);
+
+      // Discover agents that connected before us (registry events aren't retained).
+      // Must run AFTER subscribing so we receive the `here` responses.
+      publishRegistry("who-there");
     } catch (err) {
       console.error("[bridge-harness-pi] Failed to connect to NATS:", err);
     }
@@ -143,7 +208,8 @@ export default function bridgeExtension(pi: ExtensionAPI) {
 
   pi.on("agent_end", () => {
     isProcessingTurn = false;
-    flushQueue();
+    // Safety net: deliver anything the agent didn't pull via `read` during its turn.
+    flushInbox();
   });
 
   pi.on("session_shutdown", async () => {
@@ -162,23 +228,62 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "agent_bridge",
     label: "Agent Bridge",
-    description: "Send messages to other agents via NATS bridge",
+    description: "Communicate with other agents via the NATS bridge",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["send", "list_agents"], description: "Action to perform" },
-        to: { type: "string", description: 'Target: "room:venflowapp" or "agent:claude-code-9x2k"' },
-        message: { type: "string", description: "Message content" },
+        action: {
+          type: "string",
+          enum: ["send", "list_agents", "whoami", "join_room", "read"],
+          description: "Action to perform",
+        },
+        to: { type: "string", description: 'Target for send: "room:venflowapp" or "agent:claude-code-9x2k"' },
+        message: { type: "string", description: "Message content for send" },
+        room: { type: "string", description: "Room name for join_room" },
       },
       required: ["action"],
     } as any,
     async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
-      const { action, to, message } = args as { action: string; to?: string; message?: string };
+      const { action, to, message, room } = args as {
+        action: string; to?: string; message?: string; room?: string;
+      };
+
+      // The agent is calling a tool, so a turn is active: buffer incoming messages.
+      isProcessingTurn = true;
+
+      if (action === "whoami") {
+        const identity = { agentId, displayName, project, rooms: [...joinedRooms] };
+        return {
+          content: [{ type: "text", text: JSON.stringify(identity, null, 2) }],
+          details: identity,
+        };
+      }
+
+      if (action === "read") {
+        const messages = inbox.splice(0);
+        return {
+          content: [{ type: "text", text: JSON.stringify(messages, null, 2) }],
+          details: { messages },
+        };
+      }
 
       if (!nc) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "Not connected to NATS" }) }],
           details: { error: "Not connected to NATS" },
+        };
+      }
+
+      if (action === "join_room" && room) {
+        // Pi already receives every room via the wildcard subscription. join_room only
+        // announces presence so other agents see us in this room (who_is_in / list_agents).
+        joinedRooms.add(room);
+        publishRegistry("room-join", room);
+        // Refresh roster: ask who else is around.
+        publishRegistry("who-there");
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: true, joined: room }) }],
+          details: { ok: true, joined: room },
         };
       }
 

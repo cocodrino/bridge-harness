@@ -1,8 +1,11 @@
 export interface RegistryEvent {
-  type: "join" | "leave" | "room-join" | "room-leave";
+  // who-there: active discovery query. here: identity response carrying full presence.
+  type: "join" | "leave" | "room-join" | "room-leave" | "who-there" | "here";
   agentId: string;
   displayName: string;
   room?: string;
+  // Present on "here" responses: every room the responder is in.
+  rooms?: string[];
   timestamp: number;
 }
 

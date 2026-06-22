@@ -63,7 +63,9 @@ bridge.{project}.presence      # heartbeats / online status
 bridge.{project}.system        # system events
 ```
 
-`{project}` defaults to `BRIDGE_PROJECT` env var or the current directory name.
+`{project}` defaults to `BRIDGE_PROJECT`, or the git worktree name
+(`basename` of `git rev-parse --show-toplevel`), or the current directory name
+when outside a git repo. Each worktree is its own isolated namespace.
 
 ---
 
@@ -211,7 +213,7 @@ Each agent generates a unique ID (`pi-a3f7`, `claude-code-9x2k`) so multiple ins
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRIDGE_PROJECT` | `basename(cwd())` | Project name used in NATS subjects |
+| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Namespace used in NATS subjects — each worktree is isolated by default |
 | `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change this for remote agents |
 | `BRIDGE_AGENT_ID` | `{base}-{random4}` | Override the auto-generated agent ID |
 | `BRIDGE_DISPLAY_NAME` | agent ID | Human-readable name shown in `list_agents` |

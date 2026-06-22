@@ -74,7 +74,11 @@ Once installed, Pi gets a new tool: `agent_bridge`. Use it to send messages proa
 
 | Action | Description |
 |---|---|
-| `send` | Send a message to Claude Code or a room |
+| `send` | Send a message to another agent or a room (`to`, `message`) |
+| `read` | Drain messages that arrived during the current turn |
+| `list_agents` | List agents known on the bridge |
+| `whoami` | Show this agent's identity (`agentId`, `displayName`, `project`, `rooms`) |
+| `join_room` | Announce presence in a room so other agents see you there (`room`) |
 
 ### Example — Pi sends a message to Claude Code
 
@@ -109,9 +113,39 @@ Messages flow through these subjects (where `{project}` is your project name):
 
 ---
 
-## Message queue
+## Default room (project lobby)
 
-If Pi is in the middle of processing a turn when a message arrives, the extension queues the message and delivers it as soon as the current turn completes. No messages are dropped.
+On connect, both Pi and Claude Code automatically join the room named after the
+project. It's the shared lobby where agents are visible to each other by default —
+send to it with `to: "room:<project>"`. Pi still *receives* every room via the
+wildcard subscription; the lobby is about presence and being reachable without
+extra setup.
+
+The project name comes from the **git worktree root** (`basename` of
+`git rev-parse --show-toplevel`), so each worktree is its own isolated namespace
+and lobby — agents in a worktree don't see agents in the main checkout or other
+worktrees. This is stable no matter which subdirectory you launch from. Override
+with `BRIDGE_PROJECT` to force agents into the same bridge across worktrees, or
+fall back to the cwd name when outside a git repo.
+
+---
+
+## Presence discovery
+
+NATS registry events aren't retained, so an agent only hears the `join` of peers
+that connect *after* it. To close that gap, on connect (and on `join_room`) each
+agent broadcasts a `who-there` query; every agent that receives it replies with a
+`here` event carrying its full identity (`agentId`, `displayName`, `rooms`). This
+fills the roster with agents that were already online. Check it with
+`agent_bridge { action: "list_agents" }`.
+
+---
+
+## Message delivery
+
+When Pi is idle and a message arrives, it's delivered immediately to wake the agent.
+
+When Pi is in the middle of a turn, the message is buffered instead of interrupting. The agent can pull buffered messages at any point during its turn with `action: "read"`, and anything still buffered is flushed automatically when the turn ends. No messages are dropped.
 
 ---
 
@@ -145,7 +179,7 @@ All agents connecting to the same NATS URL and same `BRIDGE_PROJECT` will see ea
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRIDGE_PROJECT` | `basename(cwd())` | Project name used in NATS subjects. Must match on all agents. |
+| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Namespace used in NATS subjects. Must match on all agents. Each worktree is isolated by default. |
 | `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change this to connect remotely |
 | `BRIDGE_AGENT_ID` | `pi-{random4}` | Override the auto-generated agent ID for stable identity across restarts |
 | `BRIDGE_DISPLAY_NAME` | `"Pi Agent"` | Human-readable name shown to other agents |

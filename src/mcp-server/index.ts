@@ -52,6 +52,24 @@ function publishRegistry(event: Omit<RegistryEvent, "agentId" | "displayName" | 
 function applyRegistryEvent(event: RegistryEvent) {
   if (event.agentId === agentId) return;
 
+  if (event.type === "who-there") {
+    // Another agent is discovering peers — answer with our full identity.
+    publishRegistry({ type: "here", rooms: [...activeSubscriptions] });
+    return;
+  }
+
+  if (event.type === "here") {
+    const existing = agentPresence.get(event.agentId);
+    agentPresence.set(event.agentId, {
+      agentId: event.agentId,
+      displayName: event.displayName,
+      rooms: new Set(event.rooms ?? []),
+      joinedAt: existing?.joinedAt ?? event.timestamp,
+      lastSeen: event.timestamp,
+    });
+    return;
+  }
+
   if (event.type === "join") {
     agentPresence.set(event.agentId, {
       agentId: event.agentId,
@@ -138,6 +156,8 @@ async function subscribeToRoom(room: string) {
     }
   })();
   publishRegistry({ type: "room-join", room });
+  // Refresh roster for this room: ask who else is around.
+  publishRegistry({ type: "who-there" });
 }
 
 // ---- MCP Server ----
@@ -256,6 +276,10 @@ async function main() {
   // Announce presence + identity
   nc.publish(subjects.presence(project), encode({ agent: agentId, status: "active" }));
   publishRegistry({ type: "join" });
+  // Join the project room (shared lobby) by default — subscribes, announces presence,
+  // and broadcasts who-there to discover agents that connected before us (registry
+  // events aren't retained). Keeps Claude visible in the same default room as Pi.
+  await subscribeToRoom(project);
 
   // Heartbeat
   setInterval(() => {
