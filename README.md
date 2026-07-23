@@ -1,235 +1,249 @@
-# bridge-harness
+<div align="center">
 
-Real-time communication bridge between AI agents running in different harnesses — built on [NATS.io](https://nats.io).
+# 🌉 bridge-harness
 
-Specifically designed for **Claude Code** (Anthropic CLI) and **Pi** (earendil-works), but the transport layer is agent-agnostic.
+### Real-time messaging between AI coding agents — **no matter the provider.**
 
----
+Give **Claude Code** and **Pi** one bridge and they talk to each other *live* —
+asking, answering, going back and forth on their own. No files. No copy-paste.
+No polling. Just a conversation between agents.
 
-## Why
+[![npm version](https://img.shields.io/npm/v/@cocodrino/bridge-harness?color=7c3aed&label=npm&logo=npm)](https://www.npmjs.com/package/@cocodrino/bridge-harness)
+[![Pi extension](https://img.shields.io/npm/v/@cocodrino/bridge-harness-pi?color=ec4899&label=pi%20extension&logo=npm)](https://www.npmjs.com/package/@cocodrino/bridge-harness-pi)
+[![built on NATS](https://img.shields.io/badge/transport-NATS.io-27aae1?logo=natsdotio&logoColor=white)](https://nats.io)
+[![license MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
-Most multi-agent setups require manual coordination: the user copies output from one agent and pastes it into another. `bridge-harness` eliminates that entirely.
-
-Once installed, Claude Code and Pi communicate directly over a local NATS server — no web UI, no intermediary process, no shared filesystem hacks. Messages flow in real-time and agents react automatically.
-
----
-
-## How it works
-
-```
-┌─────────────────┐              ┌─────────────────┐
-│   Claude Code   │              │       Pi        │
-│                 │              │                 │
-│  MCP Server     │◄────────────►│  Pi Extension   │
-│  (stdio)        │              │  (native API)   │
-└────────┬────────┘              └────────┬────────┘
-         │                                │
-         │        NATS subjects           │
-         │   bridge.{project}.*           │
-         └──────────────┬─────────────────┘
-                        │
-             ┌──────────▼──────────┐
-             │    NATS Server      │
-             │   localhost:4222    │
-             │   (auto-start)      │
-             └─────────────────────┘
-```
-
-**Claude Code side** — MCP server exposing 4 tools:
-- `join_room` — subscribe to a room to receive its messages
-- `send` — send a message to a room or agent DM
-- `read` — read pending messages from the inbox
-- `list_agents` — list active agents (seen in the last 60s)
-
-**Pi side** — TypeScript extension using Pi's native `ExtensionAPI`:
-- Connects to NATS on `session_start`
-- Delivers incoming messages via `pi.sendMessage({ triggerTurn: true })` — Pi reacts **automatically**, no user prompt needed
-- Publishes heartbeats every 30s for presence tracking
-- Exposes `agent_bridge` tool for Pi to send messages proactively
-
-**asyncRewake hook** — Claude Code reacts automatically too:
-- A background Node.js script listens for incoming NATS messages
-- When a message arrives, it exits with code 2 — triggering Claude Code's `asyncRewake` mechanism
-- Claude Code wakes up, reads the inbox, and responds — zero user intervention
+</div>
 
 ---
 
-## Subjects
+## 💬 See it in action
 
-```
-bridge.{project}.room.{room}   # room messages
-bridge.{project}.dm.{agent}    # direct messages
-bridge.{project}.presence      # heartbeats / online status
-bridge.{project}.system        # system events
+These aren't chat windows — they're **real coding agents** wiring a fix together
+in real time. You start the thread; they carry it:
+
+```text
+  ╭─ 🔵 Claude Code ─────────────────────────────────────────────╮
+  │  Pi, review the auth module while I refactor the payments     │
+  │  flow — ping me with anything you find.                       │
+  ╰───────────────────────────────────────────────────────────────╯
+        │
+        ⚡ delivered over NATS · Pi wakes up on its own
+        ▼
+  ╭──────────────────────────────────────────────── 🟣 Pi Agent ─╮
+  │  On it. … Found 2 issues in middleware.ts (lines 42 & 88).    │
+  │  Missing token expiry check + a timing-unsafe compare. Patch? │
+  ╰───────────────────────────────────────────────────────────────╯
+        │
+        ⚡ asyncRewake fires · Claude answers instantly
+        ▼
+  ╭─ 🔵 Claude Code ─────────────────────────────────────────────╮
+  │  Yes please. Send the patch, I'll wire it in and run tests.   │
+  ╰───────────────────────────────────────────────────────────────╯
+        │
+        ▼
+  ╭──────────────────────────────────────────────── 🟣 Pi Agent ─╮
+  │  Sent. 🎯 Tests green on my side too. Nice teamwork.          │
+  ╰───────────────────────────────────────────────────────────────╯
+
+         no files · no copy-paste · no polling · pure real-time
 ```
 
-`{project}` defaults to `BRIDGE_PROJECT`, or the git worktree name
-(`basename` of `git rev-parse --show-toplevel`), or the current directory name
-when outside a git repo. Each worktree is its own isolated namespace.
+Most multi-agent setups make **you** the messenger: copy output from one agent,
+paste it into another, repeat. `bridge-harness` deletes that job. The agents
+address each other directly over a local NATS server and **react automatically**.
 
 ---
 
-## Installation
+## ✨ Why it's different
 
-### Prerequisites
+- ⚡ **Real-time.** [NATS](https://nats.io) pub/sub — sub-millisecond, in-process. No polling, no webhooks.
+- 🧠 **Reactive, both ways.** Claude sends → Pi wakes and processes (`triggerTurn`). Pi replies → Claude wakes (asyncRewake). A true loop, not a one-shot.
+- 🔌 **Provider-agnostic.** The transport doesn't care who's behind the agent — different vendors, same conversation.
+- 🗂️ **No intermediate files.** No scratch file, no `/tmp` handoff, no relay script. Agents talk directly.
+- 👋 **Active discovery.** Late joiners still see everyone already online.
+- 🔀 **Dynamic channels.** Tell both agents `use_bridge "X"` and they hop onto the same namespace at runtime.
+- 🌐 **Local or remote.** Same machine, LAN, or cloud NATS — same conversation, anywhere.
 
-- Node.js 18+
-- `nats-server` in PATH — install with `brew install nats-server`
-- Pi coding agent with extension support
+---
 
-### Claude Code (one command)
+## 🔁 The reactive loop
+
+```mermaid
+sequenceDiagram
+    participant C as 🔵 Claude Code
+    participant N as ⚡ NATS bridge
+    participant P as 🟣 Pi Agent
+    C->>N: send "review the auth module"
+    N-->>P: deliver — Pi wakes automatically
+    P->>N: send "found 2 issues, patch?"
+    N-->>C: deliver — asyncRewake fires
+    C->>N: send "yes, wiring it in"
+    N-->>P: deliver
+    Note over C,P: no files · no copy-paste · pure real-time
+```
+
+---
+
+## 🏗️ Architecture
+
+```text
+   🔵 Claude Code                                  🟣 Pi Agent
+   ┌─────────────────┐                          ┌─────────────────┐
+   │  MCP server     │                          │  Pi extension   │
+   │  + rewake hook  │◄────────────────────────►│  (native API)   │
+   └────────┬────────┘        NATS subjects      └────────┬────────┘
+            │             bridge.{project}.*              │
+            └──────────────────────┬──────────────────────┘
+                                   │
+                        ┌──────────▼──────────┐
+                        │     NATS Server     │
+                        │   localhost:4222    │
+                        │    (auto-start)     │
+                        └─────────────────────┘
+```
+
+**Claude Code side** — an MCP server exposing the bridge as tools:
+`send` · `read` · `list_agents` · `join_room` · `whoami` · `who_is_in` · `use_bridge`.
+A background **asyncRewake hook** wakes Claude the instant a message arrives —
+zero user intervention.
+
+**Pi side** — a TypeScript extension on Pi's native `ExtensionAPI` that delivers
+incoming messages via `pi.sendMessage({ triggerTurn: true })`, so Pi **reacts on
+its own**, and exposes the `agent_bridge` tool to send proactively.
+
+---
+
+## 🚀 Quick start
+
+**Prerequisites:** Node 18+, `nats-server` in PATH (`brew install nats-server`), Pi with extension support.
+
+**Claude Code — one command:**
 
 ```bash
 npm install -g @cocodrino/bridge-harness
-bridge-harness-setup
+bridge-harness-setup      # registers the MCP server + reactive hook
 ```
 
-That's it. The setup command automatically:
-- Registers the MCP server in Claude Code
-- Configures the asyncRewake hook so Claude Code reacts to incoming messages automatically
+Restart Claude Code. Tools `send`, `read`, `list_agents`, `join_room`, `whoami`,
+`who_is_in`, and `use_bridge` become available.
 
-Restart Claude Code. The tools `join_room`, `send`, `read`, `list_agents`, `whoami`, `who_is_in`, and `use_bridge` will be available.
-
-### Pi Extension
+**Pi — one command:**
 
 ```bash
 pi install npm:@cocodrino/bridge-harness-pi
 ```
 
-That's it. Pi downloads the package from npm and loads the extension automatically.
+Both running? The bridge is live. **Tell one agent to message the other.**
 
 ---
 
-## Usage
+## 🎮 Usage
 
-### Claude Code sending a message to Pi
+```text
+# Claude Code → Pi
+send  to: "agent:pi"  message: "Review the auth module and report back."
+       → Pi wakes up automatically and starts working.
 
-```
-send to: "agent:pi" message: "Review the auth module and report back."
-```
+# Pi → Claude Code
+agent_bridge  action: "send"  to: "agent:claude-code"
+              message: "Auth review done. Found 2 issues."
+       → Claude wakes up automatically (asyncRewake) and reads it.
 
-Pi wakes up automatically and processes the instruction.
+# Who's online?
+list_agents  → [{ "agentId": "pi-88191", "displayName": "Pi Agent @ pi-harness-fix" }]
 
-### Pi sending a message to Claude Code
-
-Pi calls the `agent_bridge` tool:
-
-```
-agent_bridge action: "send" to: "agent:claude-code" message: "Auth review done. Found 2 issues."
-```
-
-Claude Code wakes up automatically (asyncRewake) and reads the message.
-
-### Checking who's online
-
-```
-list_agents
-→ [{ "agentId": "pi", "lastSeen": 1234567890 }]
+# Hop both agents onto a shared channel, wherever they launched
+use_bridge  bridge: "debugging-session"
 ```
 
-### CLI for debugging
+**Debug CLI:**
 
 ```bash
-# Send a test message
 node dist/cli/index.js send --to pi "hello from terminal"
-
-# Watch incoming messages
 node dist/cli/index.js read --watch
-
-# List active agents
 node dist/cli/index.js agents
 ```
 
 ---
 
-## Advantages over `agent-comms`
+## 📡 Subjects
 
-| | bridge-harness | agent-comms |
-|---|---|---|
-| Build step | `tsc` only | Vite + frontend assets |
-| Web UI | None (not needed) | Required — causes runtime crash if missing from npm tarball |
-| Pi reactivity | Native `triggerTurn: true` | Broken in published version |
-| Claude Code reactivity | `asyncRewake` hook | Manual polling |
-| Maintenance | Owned by you | External, unmaintained |
-| Dependencies | `nats`, `@modelcontextprotocol/sdk`, `zod` | Heavy (Vite, Express, WebSocket server) |
-| npm install bug | No | Yes — missing `dist/bridges/user/web/` assets |
+```text
+bridge.{project}.room.{room}   # room messages
+bridge.{project}.dm.{agent}    # direct messages
+bridge.{project}.registry      # identity + discovery (join / leave / who-there / here)
+bridge.{project}.presence      # heartbeats / online status
+```
+
+`{project}` defaults to `BRIDGE_PROJECT`, or the **git worktree name** (`basename`
+of `git rev-parse --show-toplevel`), or the cwd name outside a repo. Each worktree
+is its own isolated bridge — override with `BRIDGE_PROJECT` to share one.
 
 ---
 
-## Project structure
+## 🌐 Remote agents
 
-```
-bridge-harness/
-├── src/
-│   ├── shared/          # NATS subjects, config constants
-│   ├── nats-manager/    # Auto-start, health check, cleanup
-│   ├── mcp-server/      # MCP server for Claude Code
-│   └── cli/             # Debug CLI
-├── packages/
-│   └── bridge-harness-pi/
-│       └── src/index.ts # Pi extension (TypeScript, no build needed)
-├── hooks/
-│   └── bridge-rewake.js # asyncRewake hook for Claude Code reactivity
-└── tests/               # Unit tests (vitest, 25 tests, no NATS required)
-```
-
----
-
-## Remote agents
-
-Agents don't have to be on the same machine. `nats-server` listens on `0.0.0.0:4222` by default, so any machine on the same network can connect directly.
-
-### Same LAN
-
-Machine A runs `nats-server`. Machine B connects to it:
+Agents don't have to share a machine. `nats-server` listens on `0.0.0.0:4222`:
 
 ```bash
-# On Machine B — Claude Code
+# Same LAN — point both at Machine A's NATS
 BRIDGE_NATS_URL=nats://192.168.1.10:4222 bridge-harness-mcp
-
-# On Machine B — Pi
 BRIDGE_NATS_URL=nats://192.168.1.10:4222 pi
-```
 
-Make sure port 4222 is open on Machine A's firewall.
-
-### Over the internet
-
-Host a NATS server in the cloud (fly.io, Railway, any VPS) and point all agents to it:
-
-```bash
+# Over the internet — cloud NATS (fly.io, Railway, any VPS)
 BRIDGE_NATS_URL=nats://your-server.fly.dev:4222 bridge-harness-mcp
 ```
 
-For internet-facing servers, enable NATS authentication and TLS to secure the connection. See [NATS security docs](https://docs.nats.io/running-a-nats-service/configuration/securing_nats).
-
-### Agent identity across machines
-
-Each agent generates a unique ID (`pi-a3f7`, `claude-code-9x2k`) so multiple instances on different machines don't collide. Set `BRIDGE_AGENT_ID` to pin a stable ID across restarts.
+For internet-facing servers, enable [NATS auth + TLS](https://docs.nats.io/running-a-nats-service/configuration/securing_nats).
 
 ---
 
-## Environment variables
+## ⚙️ Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Namespace used in NATS subjects — each worktree is isolated by default |
-| `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change this for remote agents |
-| `BRIDGE_AGENT_ID` | `{base}-{random4}` | Override the auto-generated agent ID |
-| `BRIDGE_DISPLAY_NAME` | agent ID | Human-readable name shown in `list_agents` |
+| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Bridge namespace — each worktree isolated by default |
+| `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change for remote agents |
+| `BRIDGE_AGENT_ID` | `{base}-{pid}` | Pin a stable agent ID across restarts |
+| `BRIDGE_DISPLAY_NAME` | agent base name (cmux-aware) | Human-readable name shown in `list_agents` |
 
 ---
 
-## Tests
+## 📁 Project structure
+
+```text
+bridge-harness/
+├── src/
+│   ├── shared/          # NATS subjects, config, identity
+│   ├── nats-manager/    # auto-start, health check, cleanup
+│   ├── mcp-server/      # MCP server for Claude Code
+│   └── cli/             # debug CLI
+├── packages/
+│   └── bridge-harness-pi/
+│       └── src/index.ts # Pi extension (TypeScript, ships as source)
+├── hooks/
+│   └── bridge-rewake.js # asyncRewake hook for Claude Code reactivity
+└── tests/               # unit tests (vitest, no NATS required)
+```
+
+---
+
+## 🧪 Tests
 
 ```bash
 npm test
 ```
 
-25 unit tests covering the NATS manager, MCP tools, Pi extension behavior, and the rewake hook. All tests run without a real NATS server.
+Unit tests cover the NATS manager, MCP tools, Pi extension behavior, and the
+rewake hook — all without a live NATS server.
 
 ---
 
-## License
+<div align="center">
 
-MIT
+**Give two agents one bridge, and watch them figure it out together.**
+
+MIT © cocodrino
+
+</div>
