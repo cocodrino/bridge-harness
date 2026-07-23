@@ -88,7 +88,7 @@ That's it. The setup command automatically:
 - Registers the MCP server in Claude Code
 - Configures the asyncRewake hook so Claude Code reacts to incoming messages automatically
 
-Restart Claude Code. The tools `join_room`, `send`, `read`, `list_agents` will be available.
+Restart Claude Code. The tools `join_room`, `send`, `read`, `list_agents`, `whoami`, `who_is_in`, and `use_bridge` will be available.
 
 ### Pi Extension
 

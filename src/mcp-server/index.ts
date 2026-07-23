@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { connect, type NatsConnection } from "nats";
+import { connect, type NatsConnection, type Subscription } from "nats";
 import { z } from "zod";
 import {
   getProject,
@@ -24,9 +24,12 @@ interface InboxMessage {
 const inbox: InboxMessage[] = [];
 const agentPresence = new Map<string, AgentPresence>();
 const activeSubscriptions = new Set<string>();
+// Every NATS subscription we hold, so we can tear them down when switching bridges.
+let trackedSubs: Subscription[] = [];
 let nc: NatsConnection;
 
-const project = getProject();
+// Mutable so `use_bridge` can move us to another namespace at runtime.
+let project = getProject();
 const agentId = generateAgentId("claude-code");
 const displayName = getDisplayName("Claude Code");
 const joinedAt = Date.now();
@@ -92,6 +95,7 @@ function applyRegistryEvent(event: RegistryEvent) {
 async function setupListeners(nc: NatsConnection) {
   // Presence (legacy + lastSeen updates)
   const presenceSub = nc.subscribe(subjects.presence(project));
+  trackedSubs.push(presenceSub);
   (async () => {
     for await (const msg of presenceSub) {
       try {
@@ -118,6 +122,7 @@ async function setupListeners(nc: NatsConnection) {
 
   // Registry (identity events)
   const registrySub = nc.subscribe(subjects.registry(project));
+  trackedSubs.push(registrySub);
   (async () => {
     for await (const msg of registrySub) {
       try {
@@ -131,6 +136,7 @@ async function setupListeners(nc: NatsConnection) {
   const dmSub = nc.subscribe(subjects.dm(project, agentId));
   // Also listen on legacy "claude-code" for backward compat
   const legacyDmSub = nc.subscribe(subjects.dm(project, "claude-code"));
+  trackedSubs.push(dmSub, legacyDmSub);
   for (const sub of [dmSub, legacyDmSub]) {
     (async () => {
       for await (const msg of sub) {
@@ -147,6 +153,7 @@ async function subscribeToRoom(room: string) {
   if (activeSubscriptions.has(room)) return;
   activeSubscriptions.add(room);
   const roomSub = nc.subscribe(subjects.room(project, room));
+  trackedSubs.push(roomSub);
   (async () => {
     for await (const msg of roomSub) {
       try {
@@ -158,6 +165,39 @@ async function subscribeToRoom(room: string) {
   publishRegistry({ type: "room-join", room });
   // Refresh roster for this room: ask who else is around.
   publishRegistry({ type: "who-there" });
+}
+
+// Move to a different bridge namespace at runtime without restarting. Both agents
+// must switch to the same bridge name to see each other. Idempotent if already there.
+async function switchBridge(newProject: string): Promise<string> {
+  const target = newProject.trim();
+  if (!target) return `Bridge name cannot be empty (still on "${project}")`;
+  if (target === project) return `Already on bridge "${project}"`;
+  const oldProject = project;
+
+  // Leave the current bridge cleanly.
+  publishRegistry({ type: "leave" });
+  nc.publish(subjects.presence(project), encode({ agent: agentId, status: "offline" }));
+
+  // Tear down every subscription on the old namespace.
+  for (const sub of trackedSubs) {
+    try { sub.unsubscribe(); } catch {}
+  }
+  trackedSubs = [];
+
+  // Reset per-bridge state — the new bridge starts with a clean roster and inbox.
+  activeSubscriptions.clear();
+  agentPresence.clear();
+  inbox.length = 0;
+
+  // Switch and re-wire on the new namespace (mirrors startup).
+  project = target;
+  await setupListeners(nc);
+  nc.publish(subjects.presence(project), encode({ agent: agentId, status: "active" }));
+  publishRegistry({ type: "join" });
+  await subscribeToRoom(project);
+
+  return `Switched to bridge "${target}" (from "${oldProject}"). Tell the other agent to use_bridge "${target}" too.`;
 }
 
 // ---- MCP Server ----
@@ -181,6 +221,18 @@ server.registerTool(
       }, null, 2),
     }],
   })
+);
+
+server.registerTool(
+  "use_bridge",
+  {
+    description: "Switch to a different bridge namespace at runtime (no restart). Both agents must use the same bridge name to communicate, regardless of where each was launched.",
+    inputSchema: z.object({ bridge: z.string().describe("The bridge/namespace name to join, e.g. \"debugging-session\"") }),
+  },
+  async ({ bridge }) => {
+    const result = await switchBridge(bridge);
+    return { content: [{ type: "text", text: result }] };
+  }
 );
 
 server.registerTool(

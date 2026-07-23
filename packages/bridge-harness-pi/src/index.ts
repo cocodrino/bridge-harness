@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { NatsConnection } from "nats";
+import type { NatsConnection, Subscription } from "nats";
 
 // Pi loads this extension through a symlink with preserve-symlinks enabled, so a
 // plain `import ... from "nats"` resolves from the symlink's directory — where the
@@ -127,12 +127,15 @@ interface InboxMessage {
 }
 
 export default function bridgeExtension(pi: ExtensionAPI) {
-  const project = getProject();
   const agentId = generateAgentId("pi");
   const displayName = getDisplayName("Pi Agent");
-  const sub = makeSubjects(project);
+  // Mutable so `use_bridge` can move us to another namespace at runtime.
+  let project = getProject();
+  let sub = makeSubjects(project);
 
   let nc: NatsConnection | null = null;
+  // Every NATS subscription we hold, so we can tear them down when switching bridges.
+  let trackedSubs: Subscription[] = [];
   let presenceInterval: ReturnType<typeof setInterval> | null = null;
   let isProcessingTurn = false;
   // Pending messages that arrived mid-turn. Drained by `read` or flushed on agent_end.
@@ -224,6 +227,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     const canonicalDmSub = nc.subscribe(sub.dm("pi"));
     const roomSub = nc.subscribe(sub.roomWildcard());
     const registrySub = nc.subscribe(sub.registry());
+    trackedSubs.push(dmSub, canonicalDmSub, roomSub, registrySub);
 
     for (const subscription of [dmSub, canonicalDmSub, roomSub]) {
       (async () => {
@@ -242,6 +246,43 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         } catch {}
       }
     })();
+  }
+
+  // Move to a different bridge namespace at runtime without restarting. Both agents
+  // must switch to the same bridge name to see each other. Idempotent if already there.
+  async function switchBridge(newProject: string): Promise<string> {
+    const target = newProject.trim();
+    if (!nc) return "Not connected to NATS";
+    if (!target) return `Bridge name cannot be empty (still on "${project}")`;
+    if (target === project) return `Already on bridge "${project}"`;
+    const oldProject = project;
+
+    // Leave the current bridge cleanly (still on the old subjects here).
+    publishRegistry("leave");
+    nc.publish(sub.presence(), encode({ agent: agentId, status: "offline" }));
+
+    // Tear down every subscription on the old namespace.
+    for (const s of trackedSubs) {
+      try { s.unsubscribe(); } catch {}
+    }
+    trackedSubs = [];
+
+    // Reset per-bridge state — the new bridge starts with a clean roster and inbox.
+    roster.clear();
+    inbox.length = 0;
+    joinedRooms.clear();
+    joinedRooms.add(target);
+
+    // Switch and re-wire on the new namespace (mirrors session_start).
+    project = target;
+    sub = makeSubjects(project);
+    nc.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
+    publishRegistry("join");
+    publishRegistry("room-join", project);
+    await subscribeToIncoming(nc);
+    publishRegistry("who-there");
+
+    return `Switched to bridge "${target}" (from "${oldProject}"). Tell the other agent to use_bridge "${target}" too.`;
   }
 
   pi.on("session_start", async () => {
@@ -296,18 +337,19 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       properties: {
         action: {
           type: "string",
-          enum: ["send", "list_agents", "whoami", "join_room", "read"],
+          enum: ["send", "list_agents", "whoami", "join_room", "read", "use_bridge"],
           description: "Action to perform",
         },
         to: { type: "string", description: 'Target for send: "room:venflowapp" or "agent:claude-code-9x2k"' },
         message: { type: "string", description: "Message content for send" },
         room: { type: "string", description: "Room name for join_room" },
+        bridge: { type: "string", description: "Bridge/namespace name for use_bridge (both agents must use the same one)" },
       },
       required: ["action"],
     } as any,
     async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
-      const { action, to, message, room } = args as {
-        action: string; to?: string; message?: string; room?: string;
+      const { action, to, message, room, bridge } = args as {
+        action: string; to?: string; message?: string; room?: string; bridge?: string;
       };
 
       // The agent is calling a tool, so a turn is active: buffer incoming messages.
@@ -326,6 +368,14 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: JSON.stringify(messages, null, 2) }],
           details: { messages },
+        };
+      }
+
+      if (action === "use_bridge" && bridge) {
+        const result = await switchBridge(bridge);
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: true, result }) }],
+          details: { ok: true, result },
         };
       }
 

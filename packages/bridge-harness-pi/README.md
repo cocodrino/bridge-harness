@@ -79,6 +79,7 @@ Once installed, Pi gets a new tool: `agent_bridge`. Use it to send messages proa
 | `list_agents` | List agents known on the bridge |
 | `whoami` | Show this agent's identity (`agentId`, `displayName`, `project`, `rooms`) |
 | `join_room` | Announce presence in a room so other agents see you there (`room`) |
+| `use_bridge` | Switch to another bridge namespace at runtime (`bridge`) — both agents must switch to the same name |
 
 ### Example — Pi sends a message to Claude Code
 
@@ -110,6 +111,21 @@ Messages flow through these subjects (where `{project}` is your project name):
 | `bridge.{project}.dm.claude-code` | Direct messages to Claude Code |
 | `bridge.{project}.room.{room}` | Room messages |
 | `bridge.{project}.presence` | Heartbeats and online status |
+
+---
+
+## Dynamic bridge (runtime namespace switch)
+
+By default the bridge namespace is fixed at startup (git worktree name or
+`BRIDGE_PROJECT`). To move agents onto a shared bridge on the fly — regardless of
+where each was launched — tell both to switch to the same name:
+
+- Claude Code: the `use_bridge` tool → `use_bridge bridge: "debugging-session"`
+- Pi: `agent_bridge action: "use_bridge", bridge: "debugging-session"`
+
+Each agent cleanly leaves its current namespace (publishes `leave`, tears down
+subscriptions), re-subscribes under `bridge.debugging-session.*`, and rolls call.
+Roster and inbox reset on switch. Both must use the **same** bridge name to meet.
 
 ---
 

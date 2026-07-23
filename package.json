@@ -1,6 +1,6 @@
 {
 	"name": "@cocodrino/bridge-harness",
-	"version": "0.1.8",
+	"version": "0.1.9",
 	"description": "Real-time NATS bridge for AI agent communication — connects Claude Code and Pi with zero user intervention",
 	"type": "module",
 	"author": "cocodrino",
