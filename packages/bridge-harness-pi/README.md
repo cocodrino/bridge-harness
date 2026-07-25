@@ -59,7 +59,8 @@ it; the agents carried it.
 - 🧠 **Reactive, both ways.** When Claude sends, Pi *wakes up and processes it* (`triggerTurn`). When Pi replies, Claude wakes up too (asyncRewake). It's a genuine back-and-forth loop, not a one-shot.
 - 🔌 **Provider-agnostic.** The transport doesn't care who's behind the agent. Claude Code, Pi, or anything that speaks the bridge — different vendors, same conversation.
 - 🗂️ **No intermediate files.** No shared scratch file, no `/tmp` handoff, no glue script relaying output. Agents address each other directly.
-- 👋 **They find each other.** Active presence discovery — an agent that joins late still sees everyone already online.
+- 🎯 **Reach anyone by identity.** DM any agent with `agent:<id>` — it works across projects and git worktrees. No matching config, no shared room required.
+- 👋 **They find each other.** Active presence discovery is global — `list_agents` shows everyone online (and their project), and late joiners still see who's already there.
 - 🌐 **Local or remote.** Same machine, same LAN, or a NATS server in the cloud. Point both at the same URL and they connect.
 
 ---
@@ -155,35 +156,40 @@ flushed automatically when the turn ends. **Nothing is dropped.**
 
 ---
 
-## 🧭 Presence discovery
+## 🧭 Presence discovery (global)
 
-NATS pub/sub doesn't retain events, so a late joiner would normally miss whoever
-was already online. On connect (and on `join_room`), each agent broadcasts a
-`who-there` query; everyone replies with a `here` carrying their identity. The
-roster fills instantly. Check it with `agent_bridge { action: "list_agents" }`.
+Discovery is global — `list_agents` shows every agent online across all
+projects/worktrees, each with its `project`. NATS pub/sub doesn't retain events, so
+on connect each agent also broadcasts a `who-there` query and everyone replies with
+a `here` carrying their identity, so late joiners still fill their roster instantly.
+Check it with `agent_bridge { action: "list_agents" }`.
 
 ---
 
-## 🔀 Dynamic bridge — switch channels on the fly
+## 🎯 Reaching agents across worktrees
 
-The bridge namespace is fixed at startup (git worktree name or `BRIDGE_PROJECT`).
-To move both agents onto a shared channel at runtime — wherever each was launched
-— just tell them the same name:
+DMs route by **identity, globally** — `to: "agent:<id>"` reaches that agent no
+matter which project or git worktree it's in. You don't need a shared room or any
+matching config; `list_agents` gives you the exact IDs.
 
-- **Claude Code:** `use_bridge bridge: "debugging-session"`
-- **Pi:** `agent_bridge action: "use_bridge", bridge: "debugging-session"`
+**Rooms**, by contrast, are **project-scoped** (an isolated lobby per worktree). If
+you specifically want to *share a room* with agents in another project, both call
+`use_bridge` with the same name to land in the same room space:
 
-Each agent leaves its current namespace cleanly, re-subscribes under
-`bridge.debugging-session.*`, and rolls call. Both must use the **same** name to meet.
+- **Pi:** `agent_bridge action: "use_bridge", bridge: "<other-project>"`
+- **Claude Code:** `use_bridge bridge: "<other-project>"`
+
+For plain messaging, though, just DM by ID — `use_bridge` is rarely needed.
 
 ---
 
 ## 🏠 Default room (project lobby)
 
-On connect, both agents auto-join the room named after the project — the shared
-lobby where they're visible by default (`to: "room:<project>"`). The project name
-comes from the **git worktree root**, so each worktree is its own isolated
-bridge. Override with `BRIDGE_PROJECT` to share one bridge across worktrees.
+On connect, both agents auto-join the room named after their project — an isolated
+lobby per worktree (`to: "room:<project>"`). The project name comes from the **git
+worktree root**, so each worktree's *rooms* stay separate. This only affects rooms;
+DMs and discovery are global regardless. Override with `BRIDGE_PROJECT` to share a
+room space across worktrees.
 
 ---
 
@@ -200,7 +206,8 @@ BRIDGE_NATS_URL=nats://192.168.1.10:4222 pi
 BRIDGE_NATS_URL=nats://your-server.fly.dev:4222 pi
 ```
 
-Same NATS URL + same `BRIDGE_PROJECT` = same conversation, anywhere.
+Same NATS URL = same bridge. DMs and discovery work across everyone connected;
+rooms are still grouped by project.
 
 ---
 
@@ -208,9 +215,9 @@ Same NATS URL + same `BRIDGE_PROJECT` = same conversation, anywhere.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Bridge namespace. Must match across agents; each worktree is isolated. |
+| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Scopes your **rooms** (isolated per worktree). DMs/discovery are global and ignore this. |
 | `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change to connect remotely |
-| `BRIDGE_AGENT_ID` | `pi-{pid}` | Pin a stable agent ID across restarts |
+| `BRIDGE_AGENT_ID` | `pi-{pid}` | Pin a stable agent ID across restarts (this is how others DM you) |
 | `BRIDGE_DISPLAY_NAME` | `Pi Agent` (or `Pi Agent @ <cmux-surface>` under cmux) | Human-readable name shown to other agents |
 
 ---

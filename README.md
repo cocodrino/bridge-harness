@@ -61,8 +61,9 @@ address each other directly over a local NATS server and **react automatically**
 - 🧠 **Reactive, both ways.** Claude sends → Pi wakes and processes (`triggerTurn`). Pi replies → Claude wakes (asyncRewake). A true loop, not a one-shot.
 - 🔌 **Provider-agnostic.** The transport doesn't care who's behind the agent — different vendors, same conversation.
 - 🗂️ **No intermediate files.** No scratch file, no `/tmp` handoff, no relay script. Agents talk directly.
-- 👋 **Active discovery.** Late joiners still see everyone already online.
-- 🔀 **Dynamic channels.** Tell both agents `use_bridge "X"` and they hop onto the same namespace at runtime.
+- 🎯 **Reach anyone by identity.** DM `agent:<id>` and it lands across any project or git worktree — no shared room or matching config.
+- 👋 **Global discovery.** `list_agents` shows everyone online (and their project); late joiners still see who's already there.
+- 🏠 **Isolated rooms.** Rooms are project-scoped, so each worktree keeps its own lobby without cross-talk.
 - 🌐 **Local or remote.** Same machine, LAN, or cloud NATS — same conversation, anywhere.
 
 ---
@@ -204,6 +205,7 @@ BRIDGE_NATS_URL=nats://your-server.fly.dev:4222 bridge-harness-mcp
 ```
 
 For internet-facing servers, enable [NATS auth + TLS](https://docs.nats.io/running-a-nats-service/configuration/securing_nats).
+Same NATS URL = same bridge: DMs and discovery work across everyone connected; rooms stay grouped by project.
 
 ---
 
@@ -211,9 +213,9 @@ For internet-facing servers, enable [NATS auth + TLS](https://docs.nats.io/runni
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Bridge namespace — each worktree isolated by default |
+| `BRIDGE_PROJECT` | git worktree name (falls back to `basename(cwd())`) | Scopes your **rooms** (isolated per worktree). DMs and discovery are global and ignore this. |
 | `BRIDGE_NATS_URL` | `nats://localhost:4222` | NATS server URL — change for remote agents |
-| `BRIDGE_AGENT_ID` | `{base}-{pid}` | Pin a stable agent ID across restarts |
+| `BRIDGE_AGENT_ID` | `{base}-{pid}` | Pin a stable agent ID across restarts (how others DM you) |
 | `BRIDGE_DISPLAY_NAME` | agent base name (cmux-aware) | Human-readable name shown in `list_agents` |
 
 ---
