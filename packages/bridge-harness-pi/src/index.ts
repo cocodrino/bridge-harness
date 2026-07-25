@@ -95,11 +95,13 @@ function getDisplayName(fallback: string): string {
 
 function makeSubjects(project: string) {
   return {
+    // Rooms are project-scoped (isolated per worktree).
     room: (room: string) => `bridge.${project}.room.${room}`,
-    dm: (agentId: string) => `bridge.${project}.dm.${agentId}`,
-    presence: () => `bridge.${project}.presence`,
-    registry: () => `bridge.${project}.registry`,
     roomWildcard: () => `bridge.${project}.room.*`,
+    // DMs and discovery are GLOBAL — reachable by identity across any project.
+    dm: (agentId: string) => `bridge.dm.${agentId}`,
+    presence: () => `bridge.presence`,
+    registry: () => `bridge.registry`,
   };
 }
 
@@ -117,6 +119,7 @@ function decode(data: Uint8Array): unknown {
 interface AgentInfo {
   agentId: string;
   displayName: string;
+  project?: string;
   rooms: Set<string>;
 }
 
@@ -151,7 +154,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     room?: string,
   ) {
     if (!nc) return;
-    nc.publish(sub.registry(), encode({ type, agentId, displayName, room, timestamp: Date.now() }));
+    nc.publish(sub.registry(), encode({ type, agentId, displayName, project, room, timestamp: Date.now() }));
   }
 
   // Identity response to a who-there query, carrying every room we're in.
@@ -159,12 +162,12 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     if (!nc) return;
     nc.publish(
       sub.registry(),
-      encode({ type: "here", agentId, displayName, rooms: [...joinedRooms], timestamp: Date.now() }),
+      encode({ type: "here", agentId, displayName, project, rooms: [...joinedRooms], timestamp: Date.now() }),
     );
   }
 
   function applyRegistryEvent(event: {
-    type: string; agentId: string; displayName: string; room?: string; rooms?: string[];
+    type: string; agentId: string; displayName: string; project?: string; room?: string; rooms?: string[];
   }) {
     if (event.agentId === agentId) return;
     if (event.type === "who-there") {
@@ -176,12 +179,13 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       roster.set(event.agentId, {
         agentId: event.agentId,
         displayName: event.displayName,
+        project: event.project,
         rooms: new Set(event.rooms ?? []),
       });
       return;
     }
     if (event.type === "join") {
-      roster.set(event.agentId, { agentId: event.agentId, displayName: event.displayName, rooms: new Set() });
+      roster.set(event.agentId, { agentId: event.agentId, displayName: event.displayName, project: event.project, rooms: new Set() });
     } else if (event.type === "leave") {
       roster.delete(event.agentId);
     } else if (event.type === "room-join" && event.room) {
@@ -242,14 +246,15 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     (async () => {
       for await (const msg of registrySub) {
         try {
-          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; room?: string; rooms?: string[] });
+          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; project?: string; room?: string; rooms?: string[] });
         } catch {}
       }
     })();
   }
 
-  // Move to a different bridge namespace at runtime without restarting. Both agents
-  // must switch to the same bridge name to see each other. Idempotent if already there.
+  // Move to a different project's ROOM space at runtime. DMs and discovery are global,
+  // so this only changes which project's rooms/lobby we're in (to share an isolated room
+  // with agents in another worktree). Idempotent if already there.
   async function switchBridge(newProject: string): Promise<string> {
     const target = newProject.trim();
     if (!nc) return "Not connected to NATS";
@@ -257,32 +262,29 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     if (target === project) return `Already on bridge "${project}"`;
     const oldProject = project;
 
-    // Leave the current bridge cleanly (still on the old subjects here).
+    // Leave the current project's rooms cleanly.
     publishRegistry("leave");
-    nc.publish(sub.presence(), encode({ agent: agentId, status: "offline" }));
 
-    // Tear down every subscription on the old namespace.
+    // Tear down subscriptions. Global subs (dm/registry/presence) are re-created with
+    // identical subjects; only the room wildcard actually changes project.
     for (const s of trackedSubs) {
       try { s.unsubscribe(); } catch {}
     }
     trackedSubs = [];
-
-    // Reset per-bridge state — the new bridge starts with a clean roster and inbox.
-    roster.clear();
-    inbox.length = 0;
+    // Roster and inbox are NOT cleared — they're global and stay valid across the switch.
     joinedRooms.clear();
     joinedRooms.add(target);
 
-    // Switch and re-wire on the new namespace (mirrors session_start).
+    // Switch project and re-wire (mirrors session_start).
     project = target;
     sub = makeSubjects(project);
-    nc.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
+    nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
     publishRegistry("join");
     publishRegistry("room-join", project);
     await subscribeToIncoming(nc);
     publishRegistry("who-there");
 
-    return `Switched to bridge "${target}" (from "${oldProject}"). Tell the other agent to use_bridge "${target}" too.`;
+    return `Switched to project "${target}" (from "${oldProject}") for rooms. Note: DMs already reach any agent by ID across projects — use_bridge is only needed to share a room.`;
   }
 
   pi.on("session_start", async () => {
@@ -290,13 +292,13 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       nc = await connect({ servers: NATS_URL });
 
       // Register identity
-      nc.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
+      nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
       publishRegistry("join");
       // Join the project room (shared lobby) by default for presence.
       publishRegistry("room-join", project);
 
       presenceInterval = setInterval(() => {
-        nc?.publish(sub.presence(), encode({ agent: agentId, status: "active" }));
+        nc?.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
       }, PRESENCE_INTERVAL_MS);
 
       await subscribeToIncoming(nc);
@@ -322,7 +324,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     }
     if (nc) {
       publishRegistry("leave");
-      nc.publish(sub.presence(), encode({ agent: agentId, status: "offline" }));
+      nc.publish(sub.presence(), encode({ agent: agentId, status: "offline", project }));
       await nc.drain();
       nc = null;
     }
@@ -331,19 +333,28 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "agent_bridge",
     label: "Agent Bridge",
-    description: "Communicate with other agents via the NATS bridge",
+    description:
+      "Communicate with other AI agents over the NATS bridge. To message a specific agent " +
+      "(e.g. a Claude Code reviewer), DM it: action=send, to=\"agent:<agentId>\". DMs are " +
+      "GLOBAL — they reach the agent by identity across ANY project/git-worktree. Rooms " +
+      "(to=\"room:<name>\") are scoped to YOUR project only. Use action=list_agents to " +
+      "discover who's online (across all projects) and their exact agentId + project.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
           enum: ["send", "list_agents", "whoami", "join_room", "read", "use_bridge"],
-          description: "Action to perform",
+          description:
+            "send: message an agent (agent:<id>, global) or room (room:<name>, your project). " +
+            "list_agents: who's online across all projects. whoami: your identity. read: pull " +
+            "buffered messages. join_room: join a room in your project. use_bridge: (rarely " +
+            "needed) join another project's room space — DMs already cross projects.",
         },
-        to: { type: "string", description: 'Target for send: "room:venflowapp" or "agent:claude-code-9x2k"' },
+        to: { type: "string", description: '"agent:claude-code-9x2k" (global DM, preferred to reach a specific agent) or "room:venflowapp" (your project only)' },
         message: { type: "string", description: "Message content for send" },
-        room: { type: "string", description: "Room name for join_room" },
-        bridge: { type: "string", description: "Bridge/namespace name for use_bridge (both agents must use the same one)" },
+        room: { type: "string", description: "Room name for join_room (scoped to your own project)" },
+        bridge: { type: "string", description: "For use_bridge: another project's name to share its room space. Not needed for DMs (those are global)." },
       },
       required: ["action"],
     } as any,
@@ -403,9 +414,16 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         const [type, target] = to.split(":");
         const subject = type === "room" ? sub.room(target) : sub.dm(target);
         nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
+        // NATS core publish always "succeeds" even with no subscriber. Warn when we can't
+        // see the recipient so the agent doesn't assume a dropped message was delivered.
+        const unknownRecipient = type === "agent" && !roster.has(target);
+        const result: Record<string, unknown> = { ok: true, sent: to, from: agentId };
+        if (unknownRecipient) {
+          result.warning = `"${target}" is not visible on the bridge. Verify the agentId with list_agents; if wrong or offline, the message was dropped (no persistence).`;
+        }
         return {
-          content: [{ type: "text", text: JSON.stringify({ ok: true, sent: to, from: agentId }) }],
-          details: { ok: true, sent: to, from: agentId },
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: result,
         };
       }
 
@@ -413,6 +431,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         const agents = [...roster.values()].map(a => ({
           agentId: a.agentId,
           displayName: a.displayName,
+          project: a.project,
           rooms: [...a.rooms],
         }));
         return {

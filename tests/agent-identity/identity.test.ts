@@ -44,6 +44,9 @@ describe("getDisplayName", () => {
 
   it("uses fallback when BRIDGE_DISPLAY_NAME is not set", () => {
     delete process.env.BRIDGE_DISPLAY_NAME;
+    // Not under cmux → plain fallback (avoid the cmux-aware "@ surface" suffix when
+    // the suite happens to run inside a cmux session).
+    delete process.env.CMUX_SURFACE_ID;
     expect(getDisplayName("Pi Agent")).toBe("Pi Agent");
   });
 });

@@ -34,7 +34,11 @@ function resolveProject() {
 function resolveSubjects() {
   const project = resolveProject();
   const agentId = process.env.BRIDGE_AGENT_ID ?? `claude-code-${process.ppid}`;
-  const dm = `bridge.${project}.dm.${agentId}`;
+  // DM is GLOBAL (not project-scoped), so the wake subject always matches the MCP's
+  // inbox subject even if the hook and MCP resolve the project differently — this is
+  // what previously caused "woken but read returns empty" across worktrees.
+  const dm = `bridge.dm.${agentId}`;
+  // Rooms stay project-scoped; wake on this project's default lobby too.
   const room = `bridge.${project}.room.${project}`;
   process.stderr.write(`[bridge-rewake] ppid=${process.ppid} dm=${dm} room=${room}\n`);
   return { dm, room, agentId };

@@ -55,7 +55,7 @@ async function cmdSend(args: string[]) {
     subject = sub.room(project, dest);
   } else if (toIdx !== -1) {
     dest = args[toIdx + 1];
-    subject = sub.dm(project, dest);
+    subject = sub.dm(dest);
   } else {
     console.error("Specify --room <room> or --to <agent>");
     process.exit(1);
@@ -72,7 +72,7 @@ async function cmdRead(args: string[]) {
 
   await requireNats();
   const nc = await connect({ servers: NATS_URL });
-  const inbox = nc.subscribe(sub.dm(project, "cli"));
+  const inbox = nc.subscribe(sub.dm("cli"));
 
   if (watch) {
     console.log("Watching for messages (Ctrl+C to stop)...\n");
@@ -107,7 +107,7 @@ async function cmdAgents() {
   const nc = await connect({ servers: NATS_URL });
 
   const agentMap = new Map<string, { lastSeen: number; status: string }>();
-  const presenceSub = nc.subscribe(sub.presence(project));
+  const presenceSub = nc.subscribe(sub.presence());
 
   // Collect presence messages for 500ms
   const timer = setTimeout(() => presenceSub.unsubscribe(), 500);

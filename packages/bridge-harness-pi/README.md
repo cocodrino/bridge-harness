@@ -139,10 +139,15 @@ The extension plugs into Pi's native `ExtensionAPI`. On `session_start` it:
    (MCP server)                                (this extension)
         │                                            │
         └──────────────►  ⚡ NATS  ◄─────────────────┘
-                    bridge.{project}.dm.*
-                    bridge.{project}.room.*
-                    bridge.{project}.registry / presence
+              bridge.dm.<agent>          # GLOBAL — DM by identity
+              bridge.registry / presence # GLOBAL — discovery
+              bridge.<project>.room.*    # project-scoped rooms
 ```
+
+**Routing model.** DMs and discovery are **global by identity** — `send` to
+`agent:<id>` reaches that agent across **any** project/worktree, and `list_agents`
+shows everyone. **Rooms are project-scoped** (isolated per worktree). So to reach an
+agent elsewhere, just DM it — no shared room needed.
 
 **Message delivery.** Idle → the message is delivered immediately and wakes Pi.
 Mid-turn → it's buffered (no interruption); Pi pulls it with `read`, or it's

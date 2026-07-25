@@ -167,18 +167,26 @@ node dist/cli/index.js agents
 
 ---
 
-## 📡 Subjects
+## 📡 Subjects & routing model
 
 ```text
-bridge.{project}.room.{room}   # room messages
-bridge.{project}.dm.{agent}    # direct messages
-bridge.{project}.registry      # identity + discovery (join / leave / who-there / here)
-bridge.{project}.presence      # heartbeats / online status
+bridge.dm.{agent}              # direct messages  — GLOBAL (by identity)
+bridge.registry                # identity + discovery (join / leave / who-there / here) — GLOBAL
+bridge.presence                # heartbeats / online status — GLOBAL
+bridge.{project}.room.{room}   # room messages    — scoped to a project
 ```
+
+**The key model:** DMs and discovery are **global by identity** — you can `send` to
+`agent:<id>` and it reaches that agent across **any** project or git worktree, and
+`list_agents` shows everyone (with their `project`). **Rooms are project-scoped**, so
+each worktree keeps an isolated lobby; a room only reaches agents in the same project.
+
+To reach an agent in another worktree, **DM it by `agentId`** — no room-joining or
+`use_bridge` needed. Use `use_bridge` only to *share a room* with another project.
 
 `{project}` defaults to `BRIDGE_PROJECT`, or the **git worktree name** (`basename`
 of `git rev-parse --show-toplevel`), or the cwd name outside a repo. Each worktree
-is its own isolated bridge — override with `BRIDGE_PROJECT` to share one.
+has its own isolated rooms — override with `BRIDGE_PROJECT` to share them.
 
 ---
 
