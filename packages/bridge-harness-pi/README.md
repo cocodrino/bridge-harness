@@ -154,6 +154,13 @@ agent elsewhere, just DM it — no shared room needed.
 Mid-turn → it's buffered (no interruption); Pi pulls it with `read`, or it's
 flushed automatically when the turn ends. **Nothing is dropped.**
 
+**DM durability (JetStream).** DMs (`bridge.dm.*`) are captured by a JetStream stream
+(30-min / 100-per-recipient retention). On the Claude side this guarantees the rewake
+hook wakes for **every** DM — even replies that land during its restart — via a durable
+consumer that gets redelivered anything it missed. Recipients that reconnect within the
+window also catch up on messages sent while they were offline. Rooms stay ephemeral. This
+needs a `nats-server` with JetStream (`-js`); the bundled auto-start enables it.
+
 ---
 
 ## 🧭 Presence discovery (global)
@@ -240,8 +247,10 @@ share the same `BRIDGE_PROJECT`, and restart Pi to reload the extension.
 **`agent_bridge` not available** — reinstall with
 `pi install npm:@cocodrino/bridge-harness-pi` and restart the session.
 
-**Messages lost while offline** — expected: NATS pub/sub doesn't persist.
-JetStream-backed durability is on the roadmap.
+**Messages lost while offline** — **DMs are durable** (retained by JetStream and
+redelivered within 30 min), so a recipient that reconnects in that window catches up.
+*Room* messages are still ephemeral core-NATS pub/sub. This needs a `nats-server` with
+JetStream enabled (the bundled auto-start does this; a remote server must run with `-js`).
 
 ---
 

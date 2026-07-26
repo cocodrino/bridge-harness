@@ -13,6 +13,7 @@ import {
 import { subjects } from "../shared/subjects.js";
 import { type AgentPresence, type RegistryEvent } from "../shared/types.js";
 import { ensureNats } from "../nats-manager/index.js";
+import { ensureDmStream } from "../shared/jetstream.js";
 
 
 interface InboxMessage {
@@ -359,6 +360,15 @@ server.registerTool(
 async function main() {
   await ensureNats();
   nc = await connect({ servers: NATS_URL });
+
+  // Provision the durable DM stream (idempotent). If JetStream is disabled on the server,
+  // warn and continue — live delivery over core NATS still works, only redelivery is lost.
+  try {
+    await ensureDmStream(nc);
+  } catch (err) {
+    console.error("[bridge-harness] JetStream unavailable — DM durability disabled. " +
+      "Run nats-server with -js for reliable wakes. Details:", (err as Error).message);
+  }
 
   await setupListeners(nc);
 

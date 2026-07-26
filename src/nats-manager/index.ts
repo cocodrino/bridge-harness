@@ -1,9 +1,14 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
+import { mkdirSync } from "node:fs";
 import {
   NATS_RETRY_INTERVAL_MS,
   NATS_START_TIMEOUT_MS,
 } from "../shared/config.js";
+
+// JetStream is enabled so DMs can be retained/redelivered (see shared/jetstream.ts).
+// Ephemeral store under /tmp: 30-min retention, and agents die on reboot anyway.
+export const JETSTREAM_STORE_DIR = "/tmp/bridge-harness-js";
 
 export function detectNatsInstalled(): boolean {
   try {
@@ -42,7 +47,8 @@ export function checkNatsRunning(port = 4222): Promise<boolean> {
 }
 
 export function startNatsServer(): ChildProcess {
-  const proc = spawn("nats-server", [], {
+  try { mkdirSync(JETSTREAM_STORE_DIR, { recursive: true }); } catch {}
+  const proc = spawn("nats-server", ["-js", "--store_dir", JETSTREAM_STORE_DIR], {
     stdio: "ignore",
     detached: false,
   });
