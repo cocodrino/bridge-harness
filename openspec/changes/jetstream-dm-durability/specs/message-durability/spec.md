@@ -30,6 +30,14 @@ between exit and reconnect) remains unacknowledged and is redelivered.
 - **WHEN** the hook has emitted a wake for a message and acknowledged it
 - **THEN** that message is not redelivered, so the hook does not enter a wake loop
 
+#### Scenario: A freshly created consumer does not replay already-read history
+- **WHEN** the hook creates its durable consumer while the stream still retains DMs the agent already read via the inbox
+- **THEN** those retained messages are not delivered to the new consumer (it starts from new messages only), so Claude is not woken with an empty inbox
+
+#### Scenario: A transient JetStream startup error does not disable durability
+- **WHEN** the hook connects while the server's JetStream is briefly unavailable (e.g. 503 right after a server restart)
+- **THEN** the hook retries the setup before falling back, and uses the durable consumer once JetStream is ready
+
 ### Requirement: Offline recipients receive missed DMs within the retention window
 A recipient's durable consumer SHALL redeliver DMs that were published while the recipient
 was offline, provided they are still within the retention window.
