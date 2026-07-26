@@ -91,13 +91,21 @@ pi install npm:@cocodrino/bridge-harness-pi
 
 That's it — Pi loads the extension automatically on the next session start.
 
-> **Prerequisite:** a local NATS server.
-> `brew install nats-server && nats-server &`
+**Updating to the latest version.** Pi caches the installed package, so pin `@latest`
+(or an explicit version) to force it to fetch the new one, then restart the session:
+
+```bash
+pi install npm:@cocodrino/bridge-harness-pi@latest
+# or a specific version:  pi install npm:@cocodrino/bridge-harness-pi@0.3.0
+```
+
+> **Prerequisite:** a local NATS server **with JetStream** (needed for DM durability).
+> `brew install nats-server && nats-server -js &`
 
 Pairing with the Claude Code side (the other half of the bridge):
 
 ```bash
-npm install -g @cocodrino/bridge-harness
+npm install -g @cocodrino/bridge-harness@latest
 bridge-harness-setup      # registers the MCP server + reactive hook
 ```
 
