@@ -89,3 +89,19 @@ agents actually target (they read the exact id from `list_agents`), and it is pe
 there is no contention. The canonical `bridge.dm.claude-code` alias stays a plain core-NATS
 live subscribe (no durability): a durable on the shared alias would make multiple Claude
 sessions compete for the same messages (each delivered once), which breaks the multi-agent case.
+
+## Post-merge hardening (found in live testing)
+
+**`deliver_policy: new` on the durable consumer.** With JetStream's default (`all`), a
+freshly-created durable consumer replays the entire retained backlog on first creation —
+re-waking Claude for messages the MCP core inbox already delivered and the agent already
+read (`read` returns empty). `new` starts the cursor at consumer-creation time, so it only
+wakes for genuinely new messages. It does NOT weaken the missed-wake fix: messages that
+arrive during a hook restart arrive *after* the (durable, persistent) consumer exists, so
+they are still redelivered.
+
+**Retry JetStream setup before falling back to core.** A just-(re)started `nats-server` can
+answer `503` for a moment while JetStream initializes. Without a retry, a hook that
+reconnects in that window drops to core-only until its next restart. The hook now retries
+the stream/consumer setup 3× (500ms apart) before falling back, so a transient `503` no
+longer disables durability.

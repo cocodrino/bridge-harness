@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { connect, ErrorCode, AckPolicy, RetentionPolicy, StorageType } from "nats";
+import { connect, ErrorCode, AckPolicy, DeliverPolicy, RetentionPolicy, StorageType } from "nats";
 import { basename } from "node:path";
 import { execFileSync } from "node:child_process";
 
@@ -54,36 +54,52 @@ async function sleep(ms) {
 // Ensure the DM stream + this agent's durable consumer exist, and return the consumer.
 // Returns null if JetStream is unavailable, so the caller falls back to a core subscribe.
 async function tryGetDurableConsumer(nc, agentId) {
-  try {
-    const jsm = await nc.jetstreamManager();
+  const durable = `rewake-${agentId}`;
+  // Retry a few times before falling back: when nats-server was just (re)started, its
+  // JetStream subsystem can answer 503 for a moment while it initializes. A transient
+  // 503 shouldn't drop us to core-only until the next hook restart.
+  const ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     try {
-      await jsm.streams.info("BRIDGE_DM");
-    } catch {
-      await jsm.streams.add({
-        name: "BRIDGE_DM",
-        subjects: ["bridge.dm.*"],
-        storage: StorageType.File,
-        retention: RetentionPolicy.Limits,
-        max_msgs_per_subject: 100,
-        max_age: 30 * 60 * 1e9, // 30 min in nanoseconds
-        max_bytes: 64 * 1024 * 1024,
-      });
+      const jsm = await nc.jetstreamManager();
+      try {
+        await jsm.streams.info("BRIDGE_DM");
+      } catch {
+        await jsm.streams.add({
+          name: "BRIDGE_DM",
+          subjects: ["bridge.dm.*"],
+          storage: StorageType.File,
+          retention: RetentionPolicy.Limits,
+          max_msgs_per_subject: 100,
+          max_age: 30 * 60 * 1e9, // 30 min in nanoseconds
+          max_bytes: 64 * 1024 * 1024,
+        });
+      }
+      try {
+        await jsm.consumers.info("BRIDGE_DM", durable);
+      } catch {
+        await jsm.consumers.add("BRIDGE_DM", {
+          durable_name: durable,
+          filter_subject: `bridge.dm.${agentId}`,
+          ack_policy: AckPolicy.Explicit,
+          // Only wake for messages that arrive AFTER this consumer is created — otherwise
+          // a fresh consumer replays the whole retained backlog (already read via the MCP
+          // core inbox), re-waking Claude for old messages ("woken but read empty").
+          deliver_policy: DeliverPolicy.New,
+        });
+      }
+      return await nc.jetstream().consumers.get("BRIDGE_DM", durable);
+    } catch (err) {
+      if (attempt < ATTEMPTS) {
+        process.stderr.write(`[bridge-rewake] JetStream not ready (attempt ${attempt}/${ATTEMPTS}): ${err.message} — retrying\n`);
+        await sleep(500);
+        continue;
+      }
+      process.stderr.write(`[bridge-rewake] JetStream unavailable after ${ATTEMPTS} attempts, using core DM subscribe: ${err.message}\n`);
+      return null;
     }
-    const durable = `rewake-${agentId}`;
-    try {
-      await jsm.consumers.info("BRIDGE_DM", durable);
-    } catch {
-      await jsm.consumers.add("BRIDGE_DM", {
-        durable_name: durable,
-        filter_subject: `bridge.dm.${agentId}`,
-        ack_policy: AckPolicy.Explicit,
-      });
-    }
-    return await nc.jetstream().consumers.get("BRIDGE_DM", durable);
-  } catch (err) {
-    process.stderr.write(`[bridge-rewake] JetStream unavailable, using core DM subscribe: ${err.message}\n`);
-    return null;
   }
+  return null;
 }
 
 async function run() {
