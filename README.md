@@ -185,6 +185,13 @@ each worktree keeps an isolated lobby; a room only reaches agents in the same pr
 To reach an agent in another worktree, **DM it by `agentId`** — no room-joining or
 `use_bridge` needed. Use `use_bridge` only to *share a room* with another project.
 
+**DM durability (JetStream).** `bridge.dm.*` is captured by a JetStream stream
+(30-min / 100-per-recipient retention), so the rewake hook wakes Claude for **every**
+DM — including replies that arrive during its restart — through a durable consumer that
+gets redelivered anything it missed, and offline recipients catch up on reconnect within
+the window. Rooms stay ephemeral core-NATS. The bundled `nats-server` auto-start enables
+JetStream (`-js`); a remote server must run with it too.
+
 `{project}` defaults to `BRIDGE_PROJECT`, or the **git worktree name** (`basename`
 of `git rev-parse --show-toplevel`), or the cwd name outside a repo. Each worktree
 has its own isolated rooms — override with `BRIDGE_PROJECT` to share them.

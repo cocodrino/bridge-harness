@@ -41,12 +41,13 @@ describe("checkNatsRunning", () => {
 describe("startNatsServer", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("spawns nats-server with correct args", () => {
+  it("spawns nats-server with JetStream enabled", () => {
     startNatsServer();
-    expect(spawn).toHaveBeenCalledWith("nats-server", [], {
-      stdio: "ignore",
-      detached: false,
-    });
+    expect(spawn).toHaveBeenCalledWith(
+      "nats-server",
+      ["-js", "--store_dir", "/tmp/bridge-harness-js"],
+      { stdio: "ignore", detached: false }
+    );
   });
 
   it("returns the spawned child process", () => {
