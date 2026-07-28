@@ -213,7 +213,10 @@ server.registerTool(
     description:
       "Get your own identity on the bridge: agentId (how others DM you), displayName, " +
       "project (your git worktree — scopes your rooms only), and the rooms you're in. " +
-      "Other agents can DM you by your agentId from any project.",
+      "Other agents can DM you by your agentId from any project. NOTE: `project` was " +
+      "captured when this agent started and does NOT follow you if you cd into a different " +
+      "git worktree — verify it still matches your working directory (see the hint in the " +
+      "output) and use `use_bridge` to realign your rooms if it drifted. DMs are unaffected.",
     inputSchema: z.object({}),
   },
   async () => ({
@@ -224,6 +227,11 @@ server.registerTool(
         displayName,
         project,
         rooms: [...activeSubscriptions],
+        worktreeHint:
+          `Rooms are scoped to "${project}" (the git worktree captured at launch). If your ` +
+          `current working directory is a DIFFERENT worktree, run ` +
+          "`basename \"$(git rev-parse --show-toplevel)\"` — if it differs from \"" + project + "\", " +
+          `call use_bridge with that name to move your rooms there. DMs by agentId work regardless.`,
       }, null, 2),
     }],
   })
@@ -233,11 +241,12 @@ server.registerTool(
   "use_bridge",
   {
     description:
-      "Join another project's ROOM space at runtime (no restart). You usually DON'T need " +
-      "this: DMs and list_agents already work across projects/worktrees by identity. Use " +
-      "it only to share an isolated room with agents in a different project — both agents " +
-      "call use_bridge with the same name to land in the same room space.",
-    inputSchema: z.object({ bridge: z.string().describe("The project/room-space name to join, e.g. the other agent's project") }),
+      "Join another project's ROOM space at runtime (no restart). Two uses: (1) realign your " +
+      "rooms after you moved to a different git worktree than the one captured at launch — pass " +
+      "`basename $(git rev-parse --show-toplevel)`; (2) share an isolated room with agents in " +
+      "another project (both call use_bridge with the same name). You usually DON'T need this " +
+      "just to message someone — DMs and list_agents already work across projects by identity.",
+    inputSchema: z.object({ bridge: z.string().describe("The project/room-space name to join — usually the basename of your current git worktree, or the other agent's project") }),
   },
   async ({ bridge }) => {
     const result = await switchBridge(bridge);
