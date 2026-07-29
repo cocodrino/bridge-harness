@@ -1,38 +1,48 @@
 ---
 name: agent-bridge
 description: >
-  Activate and operate the bridge-harness inter-agent comms reliably: report your
-  own identity, discover who is online across projects, message any agent by
-  identity, and keep your rooms aligned with your git worktree.
+  Operate the bridge-harness inter-agent comms reliably: report your identity,
+  discover who is online across projects, message any agent by identity, and keep
+  your rooms aligned with your git worktree. Works on any host of the bridge tools
+  (Claude Code, Pi, Codex, ...).
   Trigger: When the user says "activa bridge harness", "usa bridge harness",
-  "agent bridge", "usa agent bridge", "activa bridge", "usa bridge", or asks who is
-  connected on the bridge.
-license: MIT
-metadata:
-  author: cocodrino
-  version: "2.0"
+  "agent bridge", "activa bridge", "usa bridge", or asks who is connected on the bridge.
+version: "3"
 ---
+
+## How to invoke (host-specific)
+
+The bridge exposes the same capabilities everywhere; only the call syntax differs:
+
+- **Claude Code / Codex / MCP hosts** — call the tools directly:
+  `whoami`, `send`, `read`, `list_agents`, `join_room`, `who_is_in`, `use_bridge`.
+- **Pi** — call the single tool `agent_bridge` with an `action`:
+  `agent_bridge action=send to=... message=...`, `agent_bridge action=whoami`, etc.
+  (actions: `send`, `read`, `whoami`, `list_agents`, `join_room`, `use_bridge`).
+
+Below, an action like `whoami` means "the `whoami` tool" on Claude/Codex, and
+"`agent_bridge action=whoami`" on Pi.
 
 ## When to Use
 
 - The user says **"activa bridge harness"**, **"agent bridge"**, or **"activa bridge"**.
 - The user asks **who is connected** / **quién está conectado** on the bridge.
-- You need to send to, or coordinate with, another agent (e.g. Pi) over NATS.
+- You need to send to, or coordinate with, another agent over NATS.
 
 ## Routing model (read this first)
 
 | Concern | How it works |
 |---|---|
-| **Direct messages** | **GLOBAL by identity.** `send to: "agent:<agentId>"` reaches that agent across ANY project / git worktree. Subject: `bridge.dm.<agentId>` (no project). This is the reliable way to reach someone. |
-| **Discovery** | **GLOBAL.** `list_agents` shows every agent online (last 60s) across all projects, each tagged with its `project`. The native roster is reliable (agents broadcast a `who-there` query on connect and reply with `here`). |
-| **Rooms** | **Project-scoped** (`bridge.<project>.room.<room>`). Each git worktree has its own isolated lobby. A room only reaches agents in the same project. |
-| **Durability** | DMs are retained by JetStream (~30 min) and redelivered, so the rewake wakes you for every DM. Needs `nats-server -js` (the bundled auto-start does this). |
+| **Direct messages** | **GLOBAL by identity.** `send to: "agent:<agentId>"` reaches that agent across ANY project / git worktree. Subject: `bridge.dm.<agentId>`. The reliable way to reach someone. |
+| **Discovery** | **GLOBAL.** `list_agents` shows every agent online across all projects, each tagged with its `project`. The roster is reliable (agents broadcast `who-there` on connect and reply with `here`). |
+| **Rooms** | **Project-scoped** (`bridge.<project>.room.<room>`). Each git worktree has its own isolated lobby; a room only reaches agents in the same project. |
+| **Durability** | DMs are retained by JetStream (~30 min) and redelivered, so you're woken for every DM. Needs `nats-server -js` (the bundled auto-start does this). |
 
 ## Activation Sequence (run in order, every time)
 
-1. **Identify yourself** — call `whoami`. Report `agentId`, `displayName`, `project`.
+1. **Identify yourself** — `whoami`. Report `agentId`, `displayName`, `project`.
 2. **Check your worktree ↔ room alignment** (see below) and realign if it drifted.
-3. **Discover peers** — call `list_agents` (reliable, global). Show the user who is online and where.
+3. **Discover peers** — `list_agents`. Show the user who is online and where.
 4. **Show the comms cheat-sheet** so you never mis-route.
 
 ## Worktree drift check (do this at activation and after any `cd`)
@@ -44,75 +54,52 @@ NOT follow you if you move to a different git worktree. Verify and realign:
 basename "$(git rev-parse --show-toplevel)"   # your CURRENT worktree
 ```
 
-If that differs from the `project` reported by `whoami`, call:
+If that differs from the `project` reported by `whoami`, call `use_bridge` with that
+name. DMs are global, so messaging still works even if your room drifts — this only
+keeps your room/lobby membership correct.
 
-```
-use_bridge  bridge: "<basename-from-above>"
-```
-
-DMs are global, so messaging still works even if your room drifts — this only keeps
-your room/lobby membership correct.
-
-## Critical Patterns (the hard-won rules)
+## Critical Patterns
 
 | Rule | Why |
 |------|-----|
-| **DM by identity to reach anyone** | `send to: "agent:<agentId>"` is global and durable — it works across projects/worktrees and wakes the peer. Prefer this over rooms for real-time. |
-| **Rooms are project-local** | `send to: "room:<project>"` only reaches agents in the *same* project. Use it for a shared lobby, not to reach someone in another worktree. |
-| **`read` is pull-based** | You see messages when you `read`. The rewake hook wakes you on incoming DMs (and your project lobby), then you `read`. After any expected exchange, `read`. |
+| **DM by identity to reach anyone** | `send to: "agent:<agentId>"` is global and durable — works across projects/worktrees and wakes the peer. Prefer over rooms for real-time. |
+| **Rooms are project-local** | `send to: "room:<project>"` only reaches agents in the *same* project. Use it for a shared lobby, not to reach someone elsewhere. |
+| **`read` is pull-based** | You see messages when you `read`. On Claude a rewake hook wakes you on incoming DMs; on Pi messages are pushed into your turn. Either way, `read` after any expected exchange. |
 | **`send` warns on no recipient** | NATS "succeeds" at publishing to nobody. If `send` warns the target isn't visible, re-check the agentId with `list_agents`. |
 | **NATS must be up (with JetStream)** | Transport is NATS on `localhost:4222`, started with `-js` for durability. If real-time stops, verify NATS first. |
 
 ## Comms Cheat-Sheet
 
 ```
-# Direct message — GLOBAL, durable, wakes the peer (use for real-time):
-send  to: "agent:<agentId>"     message: "<text>"
-
-# Room broadcast — your project's lobby only:
-send  to: "room:<project>"      message: "<text>"
-
-# Read your pending inbox (pull — nothing arrives passively):
+# Claude Code / Codex (direct tools):
+whoami
+list_agents
+send   to: "agent:<agentId>"   message: "<text>"     # global DM, durable
+send   to: "room:<project>"    message: "<text>"     # your project's lobby only
 read
+use_bridge  bridge: "<project>"                       # realign rooms / share a room
 
-# Identity + discovery:
-whoami            # agentId, displayName, project, rooms, worktreeHint
-list_agents       # everyone online across all projects (reliable)
-
-# Move your rooms to another project (after moving worktrees, or to share a room):
-use_bridge  bridge: "<project>"
+# Pi (single tool, action=):
+agent_bridge action=whoami
+agent_bridge action=list_agents
+agent_bridge action=send to="agent:<agentId>" message="<text>"
+agent_bridge action=read
+agent_bridge action=use_bridge bridge="<project>"
 ```
 
-Your DM subject (what wakes you): `bridge.dm.<agentId>`, where
-`agentId = claude-code-<ppid>` for Claude Code instances. Under cmux, your
-`displayName` includes the surface name (e.g. `Claude Code @ review`) so instances
-are distinguishable.
+Your DM subject (what wakes you): `bridge.dm.<agentId>` (`claude-code-<ppid>` for Claude,
+`pi-<pid>` for Pi). Under cmux, your `displayName` includes the surface name (e.g.
+`Claude Code @ review`) so instances are distinguishable.
 
 ## Optional fallback — application-level "Roll Call"
 
 `list_agents` is the primary, reliable presence source. Only if you suspect the roster
-is stale, you can do a manual probe:
-
-```
-# Broadcast to the room, then read DM replies:
-send to: "room:<project>" message: "WHO_IN? from=<myAgentId>"
-# Responders DM back: HERE id=<myAgentId> name=<displayName> project=<project>
-```
-
-Dedupe replies by `id`, exclude your own echo, treat non-responders as offline. If you
-RECEIVE a `WHO_IN?`, reply by DM with your identity (`agent:<requesterId>`).
-
-## Commands
-
-```bash
-# Verify the NATS transport (needs JetStream for DM durability):
-lsof -iTCP:4222 -sTCP:LISTEN -P -n     # expect: nats-server LISTEN on 4222
-nats-server -js --store_dir /tmp/bridge-harness-js &   # start with JetStream if down
-```
+is stale, probe manually: `send to: "room:<project>" message: "WHO_IN? from=<myAgentId>"`,
+then `read` the `HERE ...` DM replies (dedupe by `id`, exclude your own echo). If you
+RECEIVE a `WHO_IN?`, reply by DM to `agent:<requesterId>` with your identity.
 
 ## Verification
 
-- After activation you reported your own `agentId` and confirmed your room matches
-  your git worktree.
+- You reported your own `agentId` and confirmed your room matches your git worktree.
 - `list_agents` shows live peers across projects.
 - A DM to `agent:<id>` reaches the peer and wakes them; you `read` the reply.

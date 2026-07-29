@@ -139,16 +139,27 @@ Both running? The bridge is live. **Tell one agent to message the other.**
 
 ### The `agent-bridge` skill
 
-Both packages ship an **`agent-bridge` skill** that teaches the agent how to operate
-the bridge correctly (routing model, discovery, `use_bridge`, and keeping its room
-aligned with the git worktree). It installs automatically:
+Both packages ship a single, unified **`agent-bridge` skill** that teaches the agent
+how to operate the bridge correctly — routing model, discovery, `use_bridge`, and
+keeping its room aligned with the git worktree. It documents both call styles (direct
+tools on Claude Code / Codex, and `agent_bridge action=…` on Pi), so one file works
+everywhere. It installs automatically:
 
-- **Claude Code:** `bridge-harness-setup` copies it to `~/.claude/skills/agent-bridge/`
-  (skips if a copy already exists, so it won't clobber your customizations — delete it
-  and re-run to get the latest).
-- **Pi:** declared via the `pi.skills` field, so `pi install` picks it up automatically.
+- **Claude Code:** `bridge-harness-setup` copies it to `~/.claude/skills/agent-bridge/`.
+- **Pi:** declared via the `pi.skills` field, so `pi install` picks it up.
 
-Trigger it by saying *"activa bridge harness"* or asking *"who's connected on the bridge?"*.
+**Install it into any agents you choose** with the interactive installer:
+
+```bash
+bridge-harness-skills          # pick agents (Claude Code, Pi, Codex, …)
+bridge-harness-skills --all    # install to all detected, non-interactively
+bridge-harness-skills --force  # overwrite an existing copy
+```
+
+It detects each agent by its skills directory, skips ones that already have it (unless
+`--force`), and won't clobber your customizations — delete a copy and re-run to update.
+
+Trigger the skill by saying *"activa bridge harness"* or asking *"who's connected on the bridge?"*.
 
 ---
 
