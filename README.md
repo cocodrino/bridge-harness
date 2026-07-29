@@ -123,7 +123,7 @@ its own**, and exposes the `agent_bridge` tool to send proactively.
 
 ```bash
 npm install -g @cocodrino/bridge-harness
-bridge-harness-setup      # registers the MCP server + reactive hook
+bridge-harness-setup   # registers the MCP server + reactive hook + agent-bridge skill
 ```
 
 Restart Claude Code. Tools `send`, `read`, `list_agents`, `join_room`, `whoami`,
@@ -136,6 +136,19 @@ pi install npm:@cocodrino/bridge-harness-pi
 ```
 
 Both running? The bridge is live. **Tell one agent to message the other.**
+
+### The `agent-bridge` skill
+
+Both packages ship an **`agent-bridge` skill** that teaches the agent how to operate
+the bridge correctly (routing model, discovery, `use_bridge`, and keeping its room
+aligned with the git worktree). It installs automatically:
+
+- **Claude Code:** `bridge-harness-setup` copies it to `~/.claude/skills/agent-bridge/`
+  (skips if a copy already exists, so it won't clobber your customizations — delete it
+  and re-run to get the latest).
+- **Pi:** declared via the `pi.skills` field, so `pi install` picks it up automatically.
+
+Trigger it by saying *"activa bridge harness"* or asking *"who's connected on the bridge?"*.
 
 ---
 

@@ -89,7 +89,10 @@ sequenceDiagram
 pi install npm:@cocodrino/bridge-harness-pi
 ```
 
-That's it — Pi loads the extension automatically on the next session start.
+That's it — Pi loads the extension automatically on the next session start. The package
+also ships an **`agent-bridge` skill** (declared via `pi.skills`) that Pi picks up on
+install — it teaches the agent how to operate the bridge (routing, discovery, `use_bridge`,
+worktree alignment). Trigger it with *"activa bridge harness"* or *"who's connected?"*.
 
 **Updating to the latest version.** Pi caches the installed package, so pin `@latest`
 (or an explicit version) to force it to fetch the new one, then restart the session:
