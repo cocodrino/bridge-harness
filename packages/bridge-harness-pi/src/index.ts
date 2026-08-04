@@ -354,7 +354,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         to: { type: "string", description: '"agent:claude-code-9x2k" (global DM, preferred to reach a specific agent) or "room:venflowapp" (your project only)' },
         message: { type: "string", description: "Message content for send" },
         room: { type: "string", description: "Room name for join_room (scoped to your own project)" },
-        bridge: { type: "string", description: "For use_bridge: another project's name to share its room space. Not needed for DMs (those are global)." },
+        bridge: { type: "string", description: "For use_bridge: the project/room-space to join — usually basename of your current git worktree (to realign rooms after moving worktrees), or another agent's project to share a room. Not needed for DMs (global)." },
       },
       required: ["action"],
     } as any,
@@ -367,7 +367,14 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       isProcessingTurn = true;
 
       if (action === "whoami") {
-        const identity = { agentId, displayName, project, rooms: [...joinedRooms] };
+        const identity = {
+          agentId, displayName, project, rooms: [...joinedRooms],
+          worktreeHint:
+            `Rooms are scoped to "${project}" (the git worktree captured at launch). If your ` +
+            `current working directory is a DIFFERENT worktree, run ` +
+            "`basename \"$(git rev-parse --show-toplevel)\"` — if it differs from \"" + project + "\", " +
+            `use action "use_bridge" with that name to move your rooms there. DMs by agentId work regardless.`,
+        };
         return {
           content: [{ type: "text", text: JSON.stringify(identity, null, 2) }],
           details: identity,

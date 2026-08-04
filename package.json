@@ -1,6 +1,6 @@
 {
 	"name": "@cocodrino/bridge-harness",
-	"version": "0.3.2",
+	"version": "0.3.7",
 	"description": "Real-time NATS bridge for AI agent communication — connects Claude Code and Pi with zero user intervention",
 	"type": "module",
 	"author": "cocodrino",
@@ -25,7 +25,8 @@
 	"bin": {
 		"bridge-harness": "./dist/cli/index.js",
 		"bridge-harness-mcp": "./dist/mcp-server/index.js",
-		"bridge-harness-setup": "./dist/setup/index.js"
+		"bridge-harness-setup": "./dist/setup/index.js",
+		"bridge-harness-skills": "./dist/install-skills/index.js"
 	},
 	"exports": {
 		".": "./dist/index.js",
@@ -35,6 +36,7 @@
 	"files": [
 		"dist/",
 		"hooks/",
+		"skills/",
 		"README.md",
 		"LICENSE"
 	],

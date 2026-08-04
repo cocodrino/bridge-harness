@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +87,42 @@ function getMcpServerPath(): string {
     return join(globalRoot, "@cocodrino", "bridge-harness", "dist", "mcp-server", "index.js");
   } catch {
     return mcpPath;
+  }
+}
+
+function getSkillSourcePath(): string {
+  // skills/ lives at the package root; resolve it locally or from the npm global install.
+  const skillPath = resolve(__dirname, "../../skills/agent-bridge/SKILL.md");
+  if (existsSync(skillPath)) return skillPath;
+  try {
+    const globalRoot = execSync("npm root -g", { encoding: "utf8" }).trim();
+    return join(globalRoot, "@cocodrino", "bridge-harness", "skills", "agent-bridge", "SKILL.md");
+  } catch {
+    return skillPath;
+  }
+}
+
+function setupSkill(): boolean {
+  const src = getSkillSourcePath();
+  if (!existsSync(src)) {
+    warn("agent-bridge skill source not found — skipping");
+    return false;
+  }
+  const destDir = join(HOME, ".claude", "skills", "agent-bridge");
+  const dest = join(destDir, "SKILL.md");
+  // Don't clobber a possibly-customized existing copy — install only if missing.
+  if (existsSync(dest)) {
+    warn("agent-bridge skill already present — skipping (delete it and re-run to get the latest)");
+    return false;
+  }
+  try {
+    mkdirSync(destDir, { recursive: true });
+    copyFileSync(src, dest);
+    success("agent-bridge skill installed in ~/.claude/skills/");
+    return true;
+  } catch (err) {
+    warn(`Could not install agent-bridge skill: ${(err as Error).message}`);
+    return false;
   }
 }
 
@@ -221,11 +257,13 @@ async function main() {
 
   setupMcp();
   setupHook();
+  setupSkill();
 
   log("\n✅ Setup complete! Restart Claude Code to activate the bridge.\n");
-  log("   Once restarted, the tools join_room, send, read, list_agents");
-  log("   will be available, and Claude Code will react automatically");
-  log("   to incoming messages from Pi.\n");
+  log("   Once restarted, the tools whoami, send, read, list_agents, join_room,");
+  log("   who_is_in and use_bridge will be available; Claude Code reacts");
+  log("   automatically to incoming messages, and the `agent-bridge` skill is");
+  log("   installed to operate the bridge correctly.\n");
 }
 
 main().catch((err) => {
