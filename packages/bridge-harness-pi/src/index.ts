@@ -2,14 +2,18 @@ import { createRequire } from "node:module";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { NatsConnection, Subscription } from "nats";
 
-// Pi loads this extension through a symlink with preserve-symlinks enabled, so a
-// plain `import ... from "nats"` resolves from the symlink's directory — where the
-// dependency isn't reachable. Resolve nats from this file's REAL path instead, which
-// lands in the package's actual node_modules. Falls back progressively if the host
-// runtime exposes import.meta / require differently.
-function loadNats(): typeof import("nats") {
+// IMPORTANT: no static `import ... from "nats"` (not even `import type`). Pi loads this
+// extension through a symlink, and some hosts (e.g. Bun-based runtimes) try to resolve
+// every import specifier — including type-only ones — from the symlink's directory, where
+// nats isn't reachable, and fail before any code runs. So nats types are kept local and
+// nats itself is resolved purely at runtime from this file's REAL path.
+type NatsConnection = any;
+type Subscription = any;
+
+// Resolve nats from this file's real path (the package's node_modules), not the symlink
+// dir. Falls back progressively if the host exposes import.meta / require differently.
+function loadNats(): any {
   try {
     return createRequire(realpathSync(fileURLToPath(import.meta.url)))("nats");
   } catch {
@@ -21,7 +25,7 @@ function loadNats(): typeof import("nats") {
   }
 }
 
-const { connect } = loadNats();
+const { connect } = loadNats() as { connect: (...args: any[]) => Promise<NatsConnection> };
 
 const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
 const PRESENCE_INTERVAL_MS = 30_000;
