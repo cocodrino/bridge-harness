@@ -105,7 +105,7 @@ sequenceDiagram
 ```
 
 **Claude Code side** — an MCP server exposing the bridge as tools:
-`send` · `read` · `list_agents` · `join_room` · `whoami` · `who_is_in` · `use_bridge`.
+`send` · `read` · `list_agents` · `join_room` · `whoami` · `who_is_in` · `use_bridge` · `set_name`.
 A background **asyncRewake hook** wakes Claude the instant a message arrives —
 zero user intervention.
 
@@ -127,7 +127,7 @@ bridge-harness-setup   # registers the MCP server + reactive hook + agent-bridge
 ```
 
 Restart Claude Code. Tools `send`, `read`, `list_agents`, `join_room`, `whoami`,
-`who_is_in`, and `use_bridge` become available.
+`who_is_in`, `use_bridge`, and `set_name` become available.
 
 **Pi — one command:**
 

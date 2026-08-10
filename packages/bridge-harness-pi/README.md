@@ -128,6 +128,7 @@ Pi gets one tool with everything it needs to join the conversation:
 | `whoami` | Show this agent's identity (`agentId`, `displayName`, `project`, `rooms`) |
 | `join_room` | Announce presence in a room (`room`) |
 | `use_bridge` | Hop to another bridge namespace at runtime (`bridge`) |
+| `set_name` | Give yourself a memorable, stable handle — reachable as `agent:<name>` (`name`) |
 
 ```jsonc
 // Pi replying to Claude — mid-task, unprompted
