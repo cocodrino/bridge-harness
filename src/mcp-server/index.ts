@@ -49,10 +49,21 @@ function decode(data: Uint8Array): unknown {
   return JSON.parse(decoder.decode(data));
 }
 
-function publishRegistry(event: Omit<RegistryEvent, "agentId" | "displayName" | "project" | "timestamp">) {
+// Resolve a DM target (an agentId OR a set_name alias) to its presence entry, so the
+// visibility check below doesn't warn "not visible" for a name that IS reachable.
+function resolvePresence(target: string): AgentPresence | undefined {
+  const direct = agentPresence.get(target);
+  if (direct) return direct;
+  for (const a of agentPresence.values()) {
+    if (a.aliases.has(target)) return a;
+  }
+  return undefined;
+}
+
+function publishRegistry(event: Omit<RegistryEvent, "agentId" | "displayName" | "project" | "aliases" | "timestamp">) {
   nc.publish(
     subjects.registry(),
-    encode({ ...event, agentId, displayName, project, timestamp: Date.now() } satisfies RegistryEvent)
+    encode({ ...event, agentId, displayName, project, aliases: [...dmAliases], timestamp: Date.now() } satisfies RegistryEvent)
   );
 }
 
@@ -72,6 +83,7 @@ function applyRegistryEvent(event: RegistryEvent) {
       displayName: event.displayName,
       project: event.project,
       rooms: new Set(event.rooms ?? []),
+      aliases: new Set(event.aliases ?? []),
       joinedAt: existing?.joinedAt ?? event.timestamp,
       lastSeen: event.timestamp,
     });
@@ -79,12 +91,15 @@ function applyRegistryEvent(event: RegistryEvent) {
   }
 
   if (event.type === "join") {
+    const existing = agentPresence.get(event.agentId);
     agentPresence.set(event.agentId, {
       agentId: event.agentId,
       displayName: event.displayName,
       project: event.project,
-      rooms: new Set(),
-      joinedAt: event.timestamp,
+      // A "join" re-announce (e.g. after set_name) shouldn't wipe rooms we already know.
+      rooms: existing?.rooms ?? new Set(),
+      aliases: new Set(event.aliases ?? []),
+      joinedAt: existing?.joinedAt ?? event.timestamp,
       lastSeen: event.timestamp,
     });
   } else if (event.type === "leave") {
@@ -119,6 +134,7 @@ async function setupListeners(nc: NatsConnection) {
               displayName: payload.agent,
               project: payload.project,
               rooms: new Set(),
+              aliases: new Set(),
               joinedAt: Date.now(),
               lastSeen: Date.now(),
             });
@@ -364,7 +380,7 @@ server.registerTool(
     let note = `Sent to ${to}`;
     if (type === "agent") {
       const now = Date.now();
-      const seen = agentPresence.get(target);
+      const seen = resolvePresence(target);
       if (!seen || now - seen.lastSeen >= PRESENCE_TTL_MS) {
         note += ` — ⚠️ warning: "${target}" is not visible on the bridge right now. ` +
           `Double-check the agent ID with list_agents; if it's wrong or the agent is offline, ` +
@@ -405,6 +421,7 @@ server.registerTool(
         displayName: a.displayName,
         project: a.project,
         rooms: [...a.rooms],
+        aliases: [...a.aliases],
         lastSeen: a.lastSeen,
       }));
     return { content: [{ type: "text", text: JSON.stringify(active, null, 2) }] };

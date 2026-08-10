@@ -9,6 +9,9 @@ export interface RegistryEvent {
   room?: string;
   // Present on "here" responses: every room the responder is in.
   rooms?: string[];
+  // Memorable DM handles (set via set_name) this agent also answers to. Carried on
+  // "join"/"here" so peers can resolve `agent:<alias>` to a live recipient.
+  aliases?: string[];
   timestamp: number;
 }
 
@@ -17,6 +20,8 @@ export interface AgentPresence {
   displayName: string;
   project?: string;
   rooms: Set<string>;
+  // Memorable DM handles this agent also answers to (from set_name).
+  aliases: Set<string>;
   joinedAt: number;
   lastSeen: number;
 }

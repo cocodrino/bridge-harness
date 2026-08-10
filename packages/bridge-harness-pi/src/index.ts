@@ -133,6 +133,8 @@ interface AgentInfo {
   displayName: string;
   project?: string;
   rooms: Set<string>;
+  // Memorable DM handles this agent also answers to (from set_name).
+  aliases: Set<string>;
 }
 
 interface InboxMessage {
@@ -159,6 +161,14 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   // Pending messages that arrived mid-turn. Drained by `read` or flushed on agent_end.
   const inbox: InboxMessage[] = [];
   const roster = new Map<string, AgentInfo>();
+  // Resolve a DM target (an agentId OR a set_name alias) to its roster entry, so the
+  // "not visible" warning doesn't fire for a name that IS reachable.
+  const resolveAgent = (target: string): AgentInfo | undefined => {
+    const direct = roster.get(target);
+    if (direct) return direct;
+    for (const a of roster.values()) if (a.aliases.has(target)) return a;
+    return undefined;
+  };
   // Pi receives every room via the wildcard subscription (for delivery), but for
   // *presence* it joins the project room by default — the shared lobby other agents
   // can find it in. Explicit join_room calls add more rooms here.
@@ -169,7 +179,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     room?: string,
   ) {
     if (!nc) return;
-    nc.publish(sub.registry(), encode({ type, agentId, displayName, project, room, timestamp: Date.now() }));
+    nc.publish(sub.registry(), encode({ type, agentId, displayName, project, room, aliases: [...dmAliases], timestamp: Date.now() }));
   }
 
   // Identity response to a who-there query, carrying every room we're in.
@@ -177,12 +187,12 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     if (!nc) return;
     nc.publish(
       sub.registry(),
-      encode({ type: "here", agentId, displayName, project, rooms: [...joinedRooms], timestamp: Date.now() }),
+      encode({ type: "here", agentId, displayName, project, rooms: [...joinedRooms], aliases: [...dmAliases], timestamp: Date.now() }),
     );
   }
 
   function applyRegistryEvent(event: {
-    type: string; agentId: string; displayName: string; project?: string; room?: string; rooms?: string[];
+    type: string; agentId: string; displayName: string; project?: string; room?: string; rooms?: string[]; aliases?: string[];
   }) {
     if (event.agentId === agentId) return;
     if (event.type === "who-there") {
@@ -196,11 +206,20 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         displayName: event.displayName,
         project: event.project,
         rooms: new Set(event.rooms ?? []),
+        aliases: new Set(event.aliases ?? []),
       });
       return;
     }
     if (event.type === "join") {
-      roster.set(event.agentId, { agentId: event.agentId, displayName: event.displayName, project: event.project, rooms: new Set() });
+      // A "join" re-announce (e.g. after set_name) shouldn't wipe rooms we already know.
+      const existing = roster.get(event.agentId);
+      roster.set(event.agentId, {
+        agentId: event.agentId,
+        displayName: event.displayName,
+        project: event.project,
+        rooms: existing?.rooms ?? new Set(),
+        aliases: new Set(event.aliases ?? []),
+      });
     } else if (event.type === "leave") {
       roster.delete(event.agentId);
     } else if (event.type === "room-join" && event.room) {
@@ -261,7 +280,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     (async () => {
       for await (const msg of registrySub) {
         try {
-          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; project?: string; room?: string; rooms?: string[] });
+          applyRegistryEvent(decode(msg.data) as { type: string; agentId: string; displayName: string; project?: string; room?: string; rooms?: string[]; aliases?: string[] });
         } catch {}
       }
     })();
@@ -472,7 +491,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
         // NATS core publish always "succeeds" even with no subscriber. Warn when we can't
         // see the recipient so the agent doesn't assume a dropped message was delivered.
-        const unknownRecipient = type === "agent" && !roster.has(target);
+        const unknownRecipient = type === "agent" && !resolveAgent(target);
         const result: Record<string, unknown> = { ok: true, sent: to, from: agentId };
         if (unknownRecipient) {
           result.warning = `"${target}" is not visible on the bridge. Verify the agentId with list_agents; if wrong or offline, the message was dropped (no persistence).`;
@@ -489,6 +508,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
           displayName: a.displayName,
           project: a.project,
           rooms: [...a.rooms],
+          aliases: [...a.aliases],
         }));
         return {
           content: [{ type: "text", text: JSON.stringify(agents, null, 2) }],
