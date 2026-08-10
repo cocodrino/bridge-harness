@@ -15,10 +15,10 @@ version: "3"
 The bridge exposes the same capabilities everywhere; only the call syntax differs:
 
 - **Claude Code / Codex / MCP hosts** — call the tools directly:
-  `whoami`, `send`, `read`, `list_agents`, `join_room`, `who_is_in`, `use_bridge`.
+  `whoami`, `send`, `read`, `list_agents`, `join_room`, `who_is_in`, `use_bridge`, `set_name`.
 - **Pi** — call the single tool `agent_bridge` with an `action`:
   `agent_bridge action=send to=... message=...`, `agent_bridge action=whoami`, etc.
-  (actions: `send`, `read`, `whoami`, `list_agents`, `join_room`, `use_bridge`).
+  (actions: `send`, `read`, `whoami`, `list_agents`, `join_room`, `use_bridge`, `set_name`).
 
 Below, an action like `whoami` means "the `whoami` tool" on Claude/Codex, and
 "`agent_bridge action=whoami`" on Pi.
@@ -78,6 +78,7 @@ send   to: "agent:<agentId>"   message: "<text>"     # global DM, durable
 send   to: "room:<project>"    message: "<text>"     # your project's lobby only
 read
 use_bridge  bridge: "<project>"                       # realign rooms / share a room
+set_name   name: "auth-reviewer"                      # memorable handle → reachable as agent:auth-reviewer
 
 # Pi (single tool, action=):
 agent_bridge action=whoami
@@ -85,7 +86,13 @@ agent_bridge action=list_agents
 agent_bridge action=send to="agent:<agentId>" message="<text>"
 agent_bridge action=read
 agent_bridge action=use_bridge bridge="<project>"
+agent_bridge action=set_name name="auth-reviewer"
 ```
+
+**Stable, memorable identity.** The auto-generated `agentId` can be awkward to share. If
+the user gives you a name (or asks you to pick one), call `set_name` — it sets your
+`displayName` AND makes you reachable as `agent:<name>` (a stable DM alias on top of your
+agentId). Use a unique name; two agents sharing one would both receive its DMs.
 
 Your DM subject (what wakes you): `bridge.dm.<agentId>` (`claude-code-<ppid>` for Claude,
 `pi-<pid>` for Pi). Under cmux, your `displayName` includes the surface name (e.g.

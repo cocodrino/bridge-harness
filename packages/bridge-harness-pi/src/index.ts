@@ -143,7 +143,8 @@ interface InboxMessage {
 
 export default function bridgeExtension(pi: ExtensionAPI) {
   const agentId = generateAgentId("pi");
-  const displayName = getDisplayName("Pi Agent");
+  // Mutable so `set_name` can update the human-readable name at runtime.
+  let displayName = getDisplayName("Pi Agent");
   // Mutable so `use_bridge` can move us to another namespace at runtime.
   let project = getProject();
   let sub = makeSubjects(project);
@@ -151,6 +152,8 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   let nc: NatsConnection | null = null;
   // Every NATS subscription we hold, so we can tear them down when switching bridges.
   let trackedSubs: Subscription[] = [];
+  // Extra DM aliases (memorable names) this agent also answers to, set via set_name.
+  const dmAliases = new Set<string>();
   let presenceInterval: ReturnType<typeof setInterval> | null = null;
   let isProcessingTurn = false;
   // Pending messages that arrived mid-turn. Drained by `read` or flushed on agent_end.
@@ -264,6 +267,17 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     })();
   }
 
+  // Subscribe to a DM alias subject so agent:<name> also reaches this agent.
+  function subscribeDmAlias(conn: NatsConnection, name: string) {
+    const aliasSub = conn.subscribe(sub.dm(name));
+    trackedSubs.push(aliasSub);
+    (async () => {
+      for await (const msg of aliasSub) {
+        try { handleIncoming(decode(msg.data) as { from: string; content: string }); } catch {}
+      }
+    })();
+  }
+
   // Move to a different project's ROOM space at runtime. DMs and discovery are global,
   // so this only changes which project's rooms/lobby we're in (to share an isolated room
   // with agents in another worktree). Idempotent if already there.
@@ -294,6 +308,8 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     publishRegistry("join");
     publishRegistry("room-join", project);
     await subscribeToIncoming(nc);
+    // Re-subscribe any name aliases (their subs were torn down above).
+    for (const name of dmAliases) subscribeDmAlias(nc, name);
     publishRegistry("who-there");
 
     return `Switched to project "${target}" (from "${oldProject}") for rooms. Note: DMs already reach any agent by ID across projects — use_bridge is only needed to share a room.`;
@@ -356,23 +372,25 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       properties: {
         action: {
           type: "string",
-          enum: ["send", "list_agents", "whoami", "join_room", "read", "use_bridge"],
+          enum: ["send", "list_agents", "whoami", "join_room", "read", "use_bridge", "set_name"],
           description:
             "send: message an agent (agent:<id>, global) or room (room:<name>, your project). " +
             "list_agents: who's online across all projects. whoami: your identity. read: pull " +
             "buffered messages. join_room: join a room in your project. use_bridge: (rarely " +
-            "needed) join another project's room space — DMs already cross projects.",
+            "needed) join another project's room space. set_name: give yourself a memorable, " +
+            "stable handle so others can reach you as agent:<name>.",
         },
         to: { type: "string", description: '"agent:claude-code-9x2k" (global DM, preferred to reach a specific agent) or "room:venflowapp" (your project only)' },
         message: { type: "string", description: "Message content for send" },
         room: { type: "string", description: "Room name for join_room (scoped to your own project)" },
         bridge: { type: "string", description: "For use_bridge: the project/room-space to join — usually basename of your current git worktree (to realign rooms after moving worktrees), or another agent's project to share a room. Not needed for DMs (global)." },
+        name: { type: "string", description: "For set_name: a memorable, unique handle (e.g. \"auth-reviewer\"). Sets your displayName and registers it as a DM alias so others can send to agent:<name>." },
       },
       required: ["action"],
     } as any,
     async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
-      const { action, to, message, room, bridge } = args as {
-        action: string; to?: string; message?: string; room?: string; bridge?: string;
+      const { action, to, message, room, bridge, name } = args as {
+        action: string; to?: string; message?: string; room?: string; bridge?: string; name?: string;
       };
 
       // The agent is calling a tool, so a turn is active: buffer incoming messages.
@@ -380,7 +398,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
 
       if (action === "whoami") {
         const identity = {
-          agentId, displayName, project, rooms: [...joinedRooms],
+          agentId, displayName, project, rooms: [...joinedRooms], aliases: [...dmAliases],
           worktreeHint:
             `Rooms are scoped to "${project}" (the git worktree captured at launch). If your ` +
             `current working directory is a DIFFERENT worktree, run ` +
@@ -413,6 +431,25 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "Not connected to NATS" }) }],
           details: { error: "Not connected to NATS" },
+        };
+      }
+
+      if (action === "set_name" && name) {
+        const n = name.trim();
+        if (!n) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "Name cannot be empty" }) }], details: { error: "empty" } };
+        }
+        displayName = n;
+        if (!dmAliases.has(n)) {
+          dmAliases.add(n);
+          subscribeDmAlias(nc, n);
+        }
+        // Re-announce so other agents' rosters pick up the new displayName.
+        publishRegistry("join");
+        const result = { ok: true, name: n, reachableAs: `agent:${n}`, agentId };
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: result,
         };
       }
 

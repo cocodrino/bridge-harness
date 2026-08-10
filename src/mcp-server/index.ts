@@ -25,6 +25,8 @@ interface InboxMessage {
 const inbox: InboxMessage[] = [];
 const agentPresence = new Map<string, AgentPresence>();
 const activeSubscriptions = new Set<string>();
+// Extra DM aliases (memorable names) this agent also answers to, set via `set_name`.
+const dmAliases = new Set<string>();
 // Every NATS subscription we hold, so we can tear them down when switching bridges.
 let trackedSubs: Subscription[] = [];
 let nc: NatsConnection;
@@ -32,7 +34,8 @@ let nc: NatsConnection;
 // Mutable so `use_bridge` can move us to another namespace at runtime.
 let project = getProject();
 const agentId = generateAgentId("claude-code");
-const displayName = getDisplayName("Claude Code");
+// Mutable so `set_name` can update the human-readable name at runtime.
+let displayName = getDisplayName("Claude Code");
 const joinedAt = Date.now();
 
 const codec = new TextEncoder();
@@ -172,6 +175,20 @@ async function subscribeToRoom(room: string) {
   publishRegistry({ type: "who-there" });
 }
 
+// Subscribe to a DM alias subject so `agent:<name>` also reaches this agent.
+function subscribeDmAlias(name: string) {
+  const aliasSub = nc.subscribe(subjects.dm(name));
+  trackedSubs.push(aliasSub);
+  (async () => {
+    for await (const msg of aliasSub) {
+      try {
+        const payload = decode(msg.data) as { from: string; content: string };
+        inbox.push({ from: payload.from, content: payload.content, timestamp: Date.now() });
+      } catch {}
+    }
+  })();
+}
+
 // Move to a different project's ROOM space at runtime without restarting. DMs and
 // discovery are global, so this only changes which project's rooms/lobby you're in
 // (useful to share an isolated room with agents in another worktree). Idempotent.
@@ -199,6 +216,8 @@ async function switchBridge(newProject: string): Promise<string> {
   nc.publish(subjects.presence(), encode({ agent: agentId, status: "active", project }));
   publishRegistry({ type: "join" });
   await subscribeToRoom(project);
+  // Re-subscribe any name aliases (their subs were torn down above).
+  for (const name of dmAliases) subscribeDmAlias(name);
 
   return `Switched to project "${target}" (from "${oldProject}") for rooms. Note: DMs already reach any agent by ID across projects — use_bridge is only needed to share a room.`;
 }
@@ -227,6 +246,7 @@ server.registerTool(
         displayName,
         project,
         rooms: [...activeSubscriptions],
+        aliases: [...dmAliases],
         worktreeHint:
           `Rooms are scoped to "${project}" (the git worktree captured at launch). If your ` +
           `current working directory is a DIFFERENT worktree, run ` +
@@ -235,6 +255,31 @@ server.registerTool(
       }, null, 2),
     }],
   })
+);
+
+server.registerTool(
+  "set_name",
+  {
+    description:
+      "Give this agent a memorable name so others can reach it reliably. Sets your " +
+      "displayName (shown in list_agents) AND registers the name as a DM alias, so other " +
+      "agents can `send` to `agent:<name>` — a stable, human-friendly handle that doesn't " +
+      "change. Use it when the user tells you what to be called, e.g. set_name \"auth-reviewer\". " +
+      "Pick a unique name; two agents sharing a name would both receive its DMs.",
+    inputSchema: z.object({ name: z.string().describe("Your memorable handle, e.g. \"auth-reviewer\" (kebab-case recommended)") }),
+  },
+  async ({ name }) => {
+    const n = name.trim();
+    if (!n) return { content: [{ type: "text", text: "Name cannot be empty." }] };
+    displayName = n;
+    if (!dmAliases.has(n)) {
+      dmAliases.add(n);
+      subscribeDmAlias(n);
+    }
+    // Re-announce so other agents' rosters pick up the new displayName.
+    publishRegistry({ type: "join" });
+    return { content: [{ type: "text", text: `Name set to "${n}". Others can now DM you as agent:${n}, and list_agents shows you as "${n}". Your original agentId (${agentId}) still works too.` }] };
+  }
 );
 
 server.registerTool(
