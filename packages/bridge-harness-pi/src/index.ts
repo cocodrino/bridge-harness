@@ -354,7 +354,20 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       // Must run AFTER subscribing so we receive the `here` responses.
       publishRegistry("who-there");
     } catch (err) {
-      console.error("[bridge-harness-pi] Failed to connect to NATS:", err);
+      // Pi only connects to NATS — it never starts it (the Claude/MCP side does, via its
+      // bundled auto-start). So a failure here almost always means no server is up. Print
+      // a clear, actionable hint instead of a raw stack trace.
+      const isLocal = /localhost|127\.0\.0\.1/.test(NATS_URL);
+      console.error(
+        `[bridge-harness-pi] Could not reach NATS at ${NATS_URL}.\n` +
+        (isLocal
+          ? `No server appears to be running. Start one (JetStream is required for DM durability):\n` +
+            `  nats-server -js\n` +
+            `Or launch the Claude Code side — it auto-starts NATS for both agents:\n` +
+            `  bridge-harness-mcp\n`
+          : `Check the server is up and reachable, or override BRIDGE_NATS_URL.\n`) +
+        `Original error: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   });
 
