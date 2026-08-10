@@ -50,6 +50,14 @@ function getProject(): string {
 
 function generateAgentId(base: string): string {
   if (process.env.BRIDGE_AGENT_ID) return process.env.BRIDGE_AGENT_ID;
+  // process.pid is a BAD anchor for Pi: the host may run tool calls in short-lived
+  // processes, so the id would change per call and DMs would land in a dead mailbox.
+  // Prefer a stable per-session anchor. Under cmux, every process in a surface shares
+  // the same CMUX_SURFACE_ID (unique per surface, so no collisions) — use it.
+  const surface = process.env.CMUX_SURFACE_ID;
+  if (surface) return `${base}-${surface.slice(0, 8).toLowerCase()}`;
+  // Outside cmux, fall back to pid. If that drifts on your host, set BRIDGE_AGENT_ID
+  // to pin a stable, unique identity.
   return `${base}-${process.pid}`;
 }
 
