@@ -105,7 +105,7 @@ sequenceDiagram
 ```
 
 **Claude Code side** — an MCP server exposing the bridge as tools:
-`send` · `read` · `list_agents` · `join_room` · `whoami` · `who_is_in` · `use_bridge` · `set_name`.
+`send` · `read` · `list_agents` · `join_room` · `whoami` · `who_is_in` · `use_bridge` · `set_name` · `spawn_agent`.
 A background **asyncRewake hook** wakes Claude the instant a message arrives —
 zero user intervention.
 
@@ -127,13 +127,24 @@ bridge-harness-setup   # registers the MCP server + reactive hook + agent-bridge
 ```
 
 Restart Claude Code. Tools `send`, `read`, `list_agents`, `join_room`, `whoami`,
-`who_is_in`, `use_bridge`, and `set_name` become available.
+`who_is_in`, `use_bridge`, `set_name`, and `spawn_agent` become available.
 
 **Pi — one command:**
 
 ```bash
 pi install npm:@cocodrino/bridge-harness-pi
 ```
+
+**oh-my-pi (`omp`) — one command:**
+
+```bash
+omp install @cocodrino/bridge-harness-pi
+```
+
+Both `pi` and `omp` also pick up the bundled **`agent-bridge` skill** automatically — it's
+declared via the package's `pi.skills` field and loaded through their skills discovery, so
+there's no extra step. (On Claude Code, `bridge-harness-setup` installs the skill for you;
+see [The `agent-bridge` skill](#the-agent-bridge-skill) to push it into more agents.)
 
 Both running? The bridge is live. **Tell one agent to message the other.**
 
@@ -188,6 +199,49 @@ use_bridge  bridge: "debugging-session"
 node dist/cli/index.js send --to pi "hello from terminal"
 node dist/cli/index.js read --watch
 node dist/cli/index.js agents
+```
+
+---
+
+## 🐣 Spawn a new agent (`spawn_agent`)
+
+Don't just message agents that already exist — **create one on the spot**. `spawn_agent`
+opens a fresh terminal tab, launches a new `pi` or `claude`, and hands it a startup prompt
+that tells it to get on the bridge, claim a name, and **DM you the moment it's live**.
+
+```text
+# Claude Code — direct tool
+spawn_agent  tool: "pi"  name: "test-verifier"  task: "verify the login flow and report findings"
+
+# Pi / oh-my-pi — via agent_bridge
+agent_bridge  action: "spawn_agent"  tool: "claude"  name: "reviewer"  task: "review the auth module"
+```
+
+Or just say it in plain language: **"crea un agente de pi para que verifique el login"**.
+
+**What happens:**
+
+1. **Host detection.** A capability probe finds your terminal's pane controller —
+   **cmux → tmux → zellij** — checking those *before* the emulator. (cmux runs on top of
+   ghostty, so `TERM_PROGRAM=ghostty` and `CMUX_SOCKET_PATH` coexist; probing the emulator
+   first would wrongly conclude "can't open a tab".)
+2. **Launch + auto-register.** It opens the tab and starts the agent with a one-line prompt:
+   activate the bridge, `set_name "<name>"`, DM you to confirm, then do `task`.
+3. **Graceful fallback.** On a plain emulator (or if the spawn fails), it **never fails
+   silently** — it returns the exact command for you to paste into a new tab yourself.
+
+After spawning, `read` to catch the new agent's `"<name> online, ready"` DM, then coordinate
+over the bridge like any other peer.
+
+```text
+   spawn_agent tool:"pi" name:"pi-buddy" task:"…"
+        │
+        ▼  opens a cmux/tmux/zellij tab, launches pi
+   ╭──────────────────────────────────────────── 🟣 pi-buddy ─╮
+   │  (auto) set_name "pi-buddy" · DM → "pi-buddy online, ready" │
+   ╰────────────────────────────────────────────────────────────╯
+        │  you: read → see the confirmation → start the task
+        ▼
 ```
 
 ---
@@ -259,6 +313,7 @@ bridge-harness/
 │   ├── shared/          # NATS subjects, config, identity
 │   ├── nats-manager/    # auto-start, health check, cleanup
 │   ├── mcp-server/      # MCP server for Claude Code
+│   ├── spawn/           # spawn_agent: host probe, command builder, tab dispatcher
 │   └── cli/             # debug CLI
 ├── packages/
 │   └── bridge-harness-pi/
