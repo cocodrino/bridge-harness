@@ -143,6 +143,96 @@ interface InboxMessage {
   timestamp: number;
 }
 
+// ---- Agent spawning (self-contained; mirrors src/spawn/* on the Claude side) ----
+// Duplicated here on purpose: this package ships standalone and must not import from the
+// repo's src/. Same reason getProject/generateAgentId are duplicated above.
+
+type SpawnBackend = "cmux" | "tmux" | "zellij" | "emulator";
+
+interface SpawnCapability {
+  backend: SpawnBackend;
+  canSpawnTab: boolean;
+  detail: string;
+}
+
+// Detect pane-controller -> emulator (specific -> generic), NEVER the reverse: cmux is
+// layered on top of ghostty, so the same env exposes TERM_PROGRAM=ghostty AND
+// CMUX_SOCKET_PATH. Checking the emulator first would wrongly report "cannot spawn".
+function probeSpawnCapability(env: NodeJS.ProcessEnv = process.env): SpawnCapability {
+  if (env.CMUX_SOCKET_PATH) {
+    const bin = env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
+    return { backend: "cmux", canSpawnTab: true, detail: `cmux via ${bin}` };
+  }
+  if (env.TMUX) return { backend: "tmux", canSpawnTab: true, detail: "tmux via new-window" };
+  if (env.ZELLIJ) return { backend: "zellij", canSpawnTab: true, detail: "zellij via new-pane" };
+  const emu = env.TERM_PROGRAM ?? env.TERM ?? "unknown";
+  return { backend: "emulator", canSpawnTab: false, detail: `no pane controller (emulator: ${emu})` };
+}
+
+// The startup prompt MUST be a single line — it gets typed into a terminal, and a newline
+// would fire Enter mid-command.
+function buildStartupPrompt(name: string, task: string, requester: string, requesterDisplay?: string): string {
+  const reportTo = requesterDisplay?.trim() ? `${requesterDisplay.trim()} (agent:${requester})` : `agent:${requester}`;
+  return (
+    `You are joining a shared agent bridge as "${name}". ` +
+    `Get online first: (1) activate bridge comms using the agent-bridge skill / bridge tool; ` +
+    `(2) claim your handle by calling set_name "${name}"; ` +
+    `(3) DM ${reportTo} to confirm you are active — send to="agent:${requester}" message="${name} online, ready". ` +
+    `Then do this task and report progress and the final result back to ${reportTo} over the bridge: ${task}`
+  );
+}
+
+function shSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+interface AgentCommand { argv: string[]; shell: string; prompt: string; label: string; }
+
+function buildAgentCommand(tool: "pi" | "claude", name: string, task: string, requester: string, requesterDisplay?: string): AgentCommand {
+  const prompt = buildStartupPrompt(name, task, requester, requesterDisplay);
+  const argv = [tool, prompt];
+  const shell = `${argv[0]} ${argv.slice(1).map(shSingleQuote).join(" ")}`;
+  return { argv, shell, prompt, label: name };
+}
+
+interface SpawnResult { spawned: boolean; backend: SpawnBackend; detail: string; manualCommand?: string; }
+
+// Always returns a result — degrades to the manual command on any failure or an
+// unsupported host instead of throwing.
+function spawnAgentTab(cmd: AgentCommand, env: NodeJS.ProcessEnv = process.env): SpawnResult {
+  const { execFileSync } = require("node:child_process");
+  const run = (file: string, args: string[]): string =>
+    execFileSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const cap = probeSpawnCapability(env);
+  const manual = (detail: string): SpawnResult => ({ spawned: false, backend: cap.backend, detail, manualCommand: cmd.shell });
+
+  if (!cap.canSpawnTab) return manual(`${cap.detail} — run this command in a new tab yourself`);
+
+  try {
+    if (cap.backend === "cmux") {
+      const bin = env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
+      const out = run(bin, ["new-pane", "--type", "terminal", "--direction", "down", "--focus", "true"]);
+      const ref = /surface:\d+/.exec(out)?.[0];
+      if (!ref) return manual(`cmux new-pane returned no surface ref (${out.trim()}) — run it yourself`);
+      run(bin, ["send", "--surface", ref, cmd.shell]);
+      run(bin, ["send-key", "--surface", ref, "Enter"]);
+      return { spawned: true, backend: "cmux", detail: `opened cmux pane ${ref} running "${cmd.label}"` };
+    }
+    if (cap.backend === "tmux") {
+      run("tmux", ["new-window", "-n", cmd.label, cmd.shell]);
+      return { spawned: true, backend: "tmux", detail: `opened tmux window "${cmd.label}"` };
+    }
+    if (cap.backend === "zellij") {
+      run("zellij", ["run", "--name", cmd.label, "--", ...cmd.argv]);
+      return { spawned: true, backend: "zellij", detail: `opened zellij pane "${cmd.label}"` };
+    }
+    return manual(`${cap.detail} — run this command yourself`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return manual(`could not spawn a tab (${msg}) — run this command yourself`);
+  }
+}
+
 export default function bridgeExtension(pi: ExtensionAPI) {
   const agentId = generateAgentId("pi");
   // Mutable so `set_name` can update the human-readable name at runtime.
@@ -404,25 +494,28 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       properties: {
         action: {
           type: "string",
-          enum: ["send", "list_agents", "whoami", "join_room", "read", "use_bridge", "set_name"],
+          enum: ["send", "list_agents", "whoami", "join_room", "read", "use_bridge", "set_name", "spawn_agent"],
           description:
             "send: message an agent (agent:<id>, global) or room (room:<name>, your project). " +
             "list_agents: who's online across all projects. whoami: your identity. read: pull " +
             "buffered messages. join_room: join a room in your project. use_bridge: (rarely " +
             "needed) join another project's room space. set_name: give yourself a memorable, " +
-            "stable handle so others can reach you as agent:<name>.",
+            "stable handle so others can reach you as agent:<name>. spawn_agent: launch a NEW " +
+            "agent (pi/claude) in a fresh terminal tab that auto-registers and reports back to you.",
         },
         to: { type: "string", description: '"agent:claude-code-9x2k" (global DM, preferred to reach a specific agent) or "room:venflowapp" (your project only)' },
         message: { type: "string", description: "Message content for send" },
         room: { type: "string", description: "Room name for join_room (scoped to your own project)" },
         bridge: { type: "string", description: "For use_bridge: the project/room-space to join — usually basename of your current git worktree (to realign rooms after moving worktrees), or another agent's project to share a room. Not needed for DMs (global)." },
-        name: { type: "string", description: "For set_name: a memorable, unique handle (e.g. \"auth-reviewer\"). Sets your displayName and registers it as a DM alias so others can send to agent:<name>." },
+        name: { type: "string", description: "For set_name: a memorable, unique handle (e.g. \"auth-reviewer\"). For spawn_agent: the handle the NEW agent will claim and how you'll address it." },
+        tool: { type: "string", enum: ["pi", "claude"], description: "For spawn_agent: which agent CLI to launch." },
+        task: { type: "string", description: "For spawn_agent: what the new agent should do, in plain language." },
       },
       required: ["action"],
     } as any,
     async execute(_toolCallId, args, _signal, _onUpdate, _ctx) {
-      const { action, to, message, room, bridge, name } = args as {
-        action: string; to?: string; message?: string; room?: string; bridge?: string; name?: string;
+      const { action, to, message, room, bridge, name, tool, task } = args as {
+        action: string; to?: string; message?: string; room?: string; bridge?: string; name?: string; tool?: "pi" | "claude"; task?: string;
       };
 
       // The agent is calling a tool, so a turn is active: buffer incoming messages.
@@ -457,6 +550,18 @@ export default function bridgeExtension(pi: ExtensionAPI) {
           content: [{ type: "text", text: JSON.stringify({ ok: true, result }) }],
           details: { ok: true, result },
         };
+      }
+
+      if (action === "spawn_agent" && tool && name && task) {
+        const cmd = buildAgentCommand(tool, name.trim(), task, agentId, displayName);
+        const result = spawnAgentTab(cmd);
+        const summary = result.spawned
+          ? { ok: true, spawned: true, agent: name, backend: result.backend, detail: result.detail,
+              note: `"${name}" will set_name and DM you (${agentId}) when active. Use action=read to catch it.` }
+          : { ok: false, spawned: false, backend: result.backend, detail: result.detail,
+              manualCommand: result.manualCommand,
+              note: `Could not open a tab here. Run manualCommand in a new tab yourself; the agent will DM you (${agentId}) once active.` };
+        return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }], details: summary };
       }
 
       if (!nc) {

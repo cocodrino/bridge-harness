@@ -14,6 +14,8 @@ import { subjects } from "../shared/subjects.js";
 import { type AgentPresence, type RegistryEvent } from "../shared/types.js";
 import { ensureNats } from "../nats-manager/index.js";
 import { ensureDmStream } from "../shared/jetstream.js";
+import { buildAgentCommand } from "../spawn/command.js";
+import { spawnAgentTab } from "../spawn/spawn.js";
 
 
 interface InboxMessage {
@@ -425,6 +427,34 @@ server.registerTool(
         lastSeen: a.lastSeen,
       }));
     return { content: [{ type: "text", text: JSON.stringify(active, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "spawn_agent",
+  {
+    description:
+      "Spawn a NEW agent (pi or claude) in a fresh terminal tab/pane and have it auto-register " +
+      "on the bridge, then report back to YOU. Use it when the user says e.g. \"crea un agente de " +
+      "pi para que verifique X\". It detects the terminal host (cmux, tmux, zellij) and opens the " +
+      "tab programmatically; if the host can't (a plain emulator), it returns the exact command " +
+      "for the user to run. The new agent is told to set_name to `name`, DM you to confirm it's " +
+      "active, then do `task` — so after calling this, wait for its confirmation DM (use `read`).",
+    inputSchema: z.object({
+      tool: z.enum(["pi", "claude"]).describe("Which agent CLI to launch: \"pi\" or \"claude\""),
+      name: z.string().describe("Memorable handle the new agent will claim (e.g. \"test-verifier\"); how you'll address it on the bridge"),
+      task: z.string().describe("What the new agent should do, in plain language"),
+    }),
+  },
+  async ({ tool, name, task }) => {
+    const cmd = buildAgentCommand({ tool, name, task, requester: agentId, requesterDisplay: displayName });
+    const result = spawnAgentTab(cmd);
+    const text = result.spawned
+      ? `✅ Spawned ${tool} agent "${name}" — ${result.detail}. It will set_name "${name}" and DM you ` +
+        `(${agentId}) when it's active. Call \`read\` to catch its confirmation.`
+      : `⚠️ Could not open a tab here (${result.detail}). Run this in a new tab yourself — it launches ` +
+        `"${name}" and it will DM you (${agentId}) once active:\n\n${result.manualCommand}`;
+    return { content: [{ type: "text", text }] };
   }
 );
 

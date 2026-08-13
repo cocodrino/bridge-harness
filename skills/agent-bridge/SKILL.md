@@ -2,12 +2,13 @@
 name: agent-bridge
 description: >
   Operate the bridge-harness inter-agent comms reliably: report your identity,
-  discover who is online across projects, message any agent by identity, and keep
-  your rooms aligned with your git worktree. Works on any host of the bridge tools
-  (Claude Code, Pi, Codex, ...).
+  discover who is online across projects, message any agent by identity, spawn new
+  agents in a terminal tab that auto-register, and keep your rooms aligned with your
+  git worktree. Works on any host of the bridge tools (Claude Code, Pi, Codex, ...).
   Trigger: When the user says "activa bridge harness", "usa bridge harness",
-  "agent bridge", "activa bridge", "usa bridge", or asks who is connected on the bridge.
-version: "3"
+  "agent bridge", "activa bridge", "usa bridge", asks who is connected on the bridge,
+  or asks to create/spawn a new agent ("crea un agente de pi/claude para que ...").
+version: "4"
 ---
 
 ## How to invoke (host-specific)
@@ -15,10 +16,10 @@ version: "3"
 The bridge exposes the same capabilities everywhere; only the call syntax differs:
 
 - **Claude Code / Codex / MCP hosts** — call the tools directly:
-  `whoami`, `send`, `read`, `list_agents`, `join_room`, `who_is_in`, `use_bridge`, `set_name`.
+  `whoami`, `send`, `read`, `list_agents`, `join_room`, `who_is_in`, `use_bridge`, `set_name`, `spawn_agent`.
 - **Pi** — call the single tool `agent_bridge` with an `action`:
   `agent_bridge action=send to=... message=...`, `agent_bridge action=whoami`, etc.
-  (actions: `send`, `read`, `whoami`, `list_agents`, `join_room`, `use_bridge`, `set_name`).
+  (actions: `send`, `read`, `whoami`, `list_agents`, `join_room`, `use_bridge`, `set_name`, `spawn_agent`).
 
 Below, an action like `whoami` means "the `whoami` tool" on Claude/Codex, and
 "`agent_bridge action=whoami`" on Pi.
@@ -79,6 +80,7 @@ send   to: "room:<project>"    message: "<text>"     # your project's lobby only
 read
 use_bridge  bridge: "<project>"                       # realign rooms / share a room
 set_name   name: "auth-reviewer"                      # memorable handle → reachable as agent:auth-reviewer
+spawn_agent tool: "pi" name: "verifier" task: "..."   # open a new agent in a tab; it DMs you when up
 
 # Pi (single tool, action=):
 agent_bridge action=whoami
@@ -87,6 +89,7 @@ agent_bridge action=send to="agent:<agentId>" message="<text>"
 agent_bridge action=read
 agent_bridge action=use_bridge bridge="<project>"
 agent_bridge action=set_name name="auth-reviewer"
+agent_bridge action=spawn_agent tool="pi" name="verifier" task="..."
 ```
 
 **Stable, memorable identity.** The auto-generated `agentId` can be awkward to share. If
@@ -97,6 +100,31 @@ agentId). Use a unique name; two agents sharing one would both receive its DMs.
 Your DM subject (what wakes you): `bridge.dm.<agentId>` (`claude-code-<ppid>` for Claude,
 `pi-<pid>` for Pi). Under cmux, your `displayName` includes the surface name (e.g.
 `Claude Code @ review`) so instances are distinguishable.
+
+## Spawning a new agent (`spawn_agent`)
+
+Launch a brand-new agent in a fresh terminal tab that gets on the bridge by itself and
+reports back to you. Use it when the user says e.g. *"crea un agente de pi para que
+verifique X"*.
+
+```
+spawn_agent  tool: "pi"|"claude"   name: "test-verifier"   task: "verify the login flow"
+# Pi:  agent_bridge action=spawn_agent tool="pi" name="test-verifier" task="verify the login flow"
+```
+
+What it does:
+1. **Detects the terminal host** — a capability probe checks pane controllers *before* the
+   emulator (cmux → tmux → zellij → plain emulator). This ordering matters: cmux runs on
+   top of ghostty, so `TERM_PROGRAM=ghostty` and `CMUX_SOCKET_PATH` coexist; checking the
+   emulator first would wrongly conclude "can't open a tab".
+2. **Opens the tab and launches the agent** with a one-line startup prompt telling it to:
+   activate the bridge, `set_name "<name>"`, DM you to confirm it's active, then do `task`.
+3. **Graceful fallback** — on a plain emulator (or if the spawn fails), it does NOT fail
+   silently: it returns the exact command for the user to paste into a new tab. The command
+   is identical to what it would have run itself.
+
+After calling `spawn_agent`, **wait for the new agent's confirmation DM** — `read` to catch
+its `"<name> online, ready"` message, then coordinate the task over the bridge.
 
 ## Optional fallback — application-level "Roll Call"
 
