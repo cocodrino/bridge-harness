@@ -605,7 +605,11 @@ export default function bridgeExtension(pi: ExtensionAPI) {
 
       if (action === "send" && to && message) {
         const [type, target] = to.split(":");
-        const subject = type === "room" ? sub.room(target) : sub.dm(target);
+        // Resolve a set_name alias to the recipient's real agentId before publishing (mirrors
+        // the Claude side): a DM to bridge.dm.<alias> lands in the inbox but never wakes the
+        // peer, since the rewake path only watches bridge.dm.<agentId>.
+        const dmTarget = type === "agent" ? (resolveAgent(target)?.agentId ?? target) : target;
+        const subject = type === "room" ? sub.room(target) : sub.dm(dmTarget);
         nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
         // NATS core publish always "succeeds" even with no subscriber. Warn when we can't
         // see the recipient so the agent doesn't assume a dropped message was delivered.
