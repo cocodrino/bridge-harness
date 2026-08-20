@@ -373,9 +373,15 @@ server.registerTool(
   },
   async ({ to, message }) => {
     const [type, target] = to.split(":");
+    // Resolve a set_name alias to the recipient's real agentId BEFORE publishing. A DM to
+    // bridge.dm.<alias> reaches the peer's MCP inbox (it subscribes to the alias) but NEVER
+    // wakes them: the rewake hook only watches bridge.dm.<agentId>, the canonical alias, and
+    // the room — not arbitrary name aliases. Routing to bridge.dm.<agentId> also lands the DM
+    // on the durable JetStream consumer, so it gains redelivery too.
+    const dmTarget = type === "agent" ? (resolvePresence(target)?.agentId ?? target) : target;
     const subject = type === "room"
       ? subjects.room(project, target)
-      : subjects.dm(target);
+      : subjects.dm(dmTarget);
     nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
     // NATS core publish always "succeeds" even with zero subscribers, so warn when we
     // can't see the recipient — the message may silently go nowhere.
