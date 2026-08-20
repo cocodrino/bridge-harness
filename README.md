@@ -68,6 +68,40 @@ address each other directly over a local NATS server and **react automatically**
 
 ---
 
+## 🤔 Why this instead of sub-agents?
+
+Sub-agents (Claude's `Task` tool, workflow fan-out) and bridge-harness solve **different
+problems** — this isn't a replacement, it's a different shape of collaboration. Reach for
+the bridge when these matter:
+
+- 🧬 **Different brains, same table — the big one.** Sub-agents are all *the same model* as
+  the parent. The bridge sits **Claude + Pi + omp** together, and Pi/omp bring their own
+  models (gemini, kimi, gpt, deepseek, …). You get **genuine cross-vendor deliberation** —
+  a real second opinion from *another* brain, not another copy of yours.
+- 🔄 **Living peers, two-way dialogue.** A sub-agent is **one-shot**: the parent launches it,
+  it returns a single result, and it **dies**. Bridge agents **persist** — they keep a
+  stable name, their own context, and talk **back and forth**, each waking the other. It's a
+  conversation between colleagues, not a fire-and-collect worker.
+- 👁️ **Human in the loop, in the open.** With `spawn_agent` each agent lives in **its own
+  terminal tab** you can watch, interrupt, and steer in real time. Sub-agents are **black
+  boxes** until they return.
+- 🌍 **Across worktrees, machines, and vendors.** Sub-agents live inside the parent process
+  on one machine; bridge agents reach each other over local, LAN, or internet NATS.
+
+**When sub-agents are the better tool (be honest):** massive cheap fan-out (20 workers
+searching/reviewing in parallel), deterministic orchestration with structured results, and
+zero setup with automatic cleanup. The bridge leaves live processes running; sub-agents are
+born and reaped for you.
+
+> **Rule of thumb** — Sub-agents = *ephemeral, hierarchical parallelism* under one
+> orchestrator (task → result → gone). Bridge-harness = *persistent collaboration between
+> heterogeneous peers* (an ongoing, multi-vendor conversation a human can watch and direct).
+>
+> *“15 quick opinions and a summary”* → sub-agents. *“Claude and a different model working
+> together for a while, arguing it out, with me able to step in”* → the bridge.
+
+---
+
 ## 🔁 The reactive loop
 
 ```mermaid
