@@ -46,12 +46,19 @@ export function checkNatsRunning(port = 4222): Promise<boolean> {
   });
 }
 
+// NATS is a SHARED resource: every agent on the machine talks to the same broker.
+// It is therefore spawned detached + unref'd, so it outlives whichever agent happened
+// to start it. Previously it ran as an attached child that we SIGTERM'd on exit, which
+// meant the first agent to boot owned the broker and took the whole bridge down with it
+// when it quit — every other agent went silent at once.
 export function startNatsServer(): ChildProcess {
   try { mkdirSync(JETSTREAM_STORE_DIR, { recursive: true }); } catch {}
   const proc = spawn("nats-server", ["-js", "--store_dir", JETSTREAM_STORE_DIR], {
     stdio: "ignore",
-    detached: false,
+    detached: true,
   });
+  // Don't hold the event loop open on the broker's behalf.
+  proc.unref();
 
   proc.on("error", (err) => {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -87,18 +94,16 @@ export async function ensureNats(port = 4222): Promise<void> {
   await waitForNats(port);
 }
 
-function cleanup() {
+// NOTE: there is deliberately NO exit/SIGTERM/SIGINT handler that kills nats-server.
+// The broker is shared by every agent on the machine, so tearing it down when one agent
+// exits would disconnect all the others. A leftover nats-server is cheap (~10 MB idle)
+// and is reused by the next agent via ensureNats()'s early return.
+//
+// Exposed for tests and for an explicit operator-initiated shutdown only — never wired
+// to this process's lifecycle.
+export function stopNatsServer(): void {
   if (natsProcess && !natsProcess.killed) {
     natsProcess.kill("SIGTERM");
   }
+  natsProcess = null;
 }
-
-process.on("exit", cleanup);
-process.on("SIGTERM", () => {
-  cleanup();
-  process.exit(0);
-});
-process.on("SIGINT", () => {
-  cleanup();
-  process.exit(0);
-});

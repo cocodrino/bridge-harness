@@ -7,6 +7,7 @@ vi.mock("node:child_process", () => ({
     killed: false,
     kill: vi.fn(),
     on: vi.fn(),
+    unref: vi.fn(),
   })),
 }));
 
@@ -17,6 +18,7 @@ const {
   checkNatsRunning,
   startNatsServer,
   ensureNats,
+  stopNatsServer,
 } = await import("../../src/nats-manager/index.js");
 
 describe("checkNatsRunning", () => {
@@ -46,8 +48,22 @@ describe("startNatsServer", () => {
     expect(spawn).toHaveBeenCalledWith(
       "nats-server",
       ["-js", "--store_dir", "/tmp/bridge-harness-js"],
-      { stdio: "ignore", detached: false }
+      { stdio: "ignore", detached: true }
     );
+  });
+
+  // The broker is shared by every agent on the machine. Spawning it attached made the
+  // first agent to boot its owner, and that agent killed it on exit — silently
+  // disconnecting every other agent at once.
+  it("spawns nats-server DETACHED so it outlives the agent that started it", () => {
+    startNatsServer();
+    const opts = vi.mocked(spawn).mock.calls[0][2] as { detached: boolean };
+    expect(opts.detached).toBe(true);
+  });
+
+  it("unrefs the child so it never holds this process's event loop open", () => {
+    const proc = startNatsServer();
+    expect(proc.unref).toHaveBeenCalled();
   });
 
   it("returns the spawned child process", () => {
@@ -83,7 +99,7 @@ describe("ensureNats", () => {
     spawnMock.mockImplementationOnce(() => {
       // Start a fake server to simulate NATS becoming available
       fakeServer.listen(port, "localhost");
-      return { killed: false, kill: vi.fn(), on: vi.fn() } as never;
+      return { killed: false, kill: vi.fn(), on: vi.fn(), unref: vi.fn() } as never;
     });
 
     await ensureNats(port);
@@ -93,17 +109,55 @@ describe("ensureNats", () => {
   });
 });
 
-describe("cleanup on process signals", () => {
-  it("kills nats process when process exits", () => {
+// Regression guard for the bug this replaced: nats-server used to be SIGTERM'd from an
+// `exit` handler, so whichever agent happened to start the broker took the entire bridge
+// down with it when the user closed that one session. Every other agent went deaf at once,
+// which read as "disabling the bridge in one agent disabled it in the others".
+describe("agent shutdown does NOT touch the shared broker", () => {
+  const signals = ["exit", "SIGTERM", "SIGINT"] as const;
+
+  for (const signal of signals) {
+    it(`leaves nats-server running on ${signal}`, () => {
+      const mockKill = vi.fn();
+      const fakeProc = { killed: false, kill: mockKill, on: vi.fn(), unref: vi.fn() };
+      vi.mocked(spawn).mockReturnValueOnce(fakeProc as never);
+
+      startNatsServer();
+      process.emit(signal as "exit", 0 as never);
+
+      expect(mockKill).not.toHaveBeenCalled();
+    });
+  }
+
+  it("registers no listener that could kill the broker", () => {
+    // If a future change re-adds a killing handler, the assertions above catch it. This
+    // one documents that the module intentionally installs no lifecycle hooks at all.
+    const fakeProc = { killed: false, kill: vi.fn(), on: vi.fn(), unref: vi.fn() };
+    vi.mocked(spawn).mockReturnValueOnce(fakeProc as never);
+    startNatsServer();
+
+    process.emit("exit", 0);
+    process.emit("SIGTERM" as "exit", 0 as never);
+    process.emit("SIGINT" as "exit", 0 as never);
+
+    expect(fakeProc.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("stopNatsServer", () => {
+  it("kills the broker only when called explicitly", () => {
     const mockKill = vi.fn();
-    const fakeProc = { killed: false, kill: mockKill, on: vi.fn() };
+    const fakeProc = { killed: false, kill: mockKill, on: vi.fn(), unref: vi.fn() };
     vi.mocked(spawn).mockReturnValueOnce(fakeProc as never);
 
     startNatsServer();
+    expect(mockKill).not.toHaveBeenCalled();
 
-    // Trigger the exit handler
-    process.emit("exit", 0);
-
+    stopNatsServer();
     expect(mockKill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("is a no-op when this process never started a broker", () => {
+    expect(() => stopNatsServer()).not.toThrow();
   });
 });

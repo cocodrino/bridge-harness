@@ -73,6 +73,17 @@ export function getDisplayName(fallback: string): string {
 }
 
 export const NATS_URL = "nats://localhost:4222";
+
+// nats.js defaults to 10 reconnect attempts and then closes the connection for good.
+// A long-lived agent session outlives any single broker restart, so giving up leaves it
+// permanently deaf even after NATS comes back. Retry forever instead — the agent has no
+// other transport, and an idle reconnect loop is essentially free.
+export const NATS_CONNECT_OPTIONS = {
+  servers: NATS_URL,
+  maxReconnectAttempts: -1,
+  reconnectTimeWait: 2_000,
+  waitOnFirstConnect: true,
+} as const;
 export const PRESENCE_INTERVAL_MS = 30_000;
 export const PRESENCE_TTL_MS = 60_000;
 export const NATS_START_TIMEOUT_MS = 5_000;

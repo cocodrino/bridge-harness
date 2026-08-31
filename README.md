@@ -163,6 +163,13 @@ bridge-harness-setup   # registers the MCP server + reactive hook + agent-bridge
 Restart Claude Code. Tools `send`, `read`, `list_agents`, `join_room`, `whoami`,
 `who_is_in`, `use_bridge`, `set_name`, and `spawn_agent` become available.
 
+> **`bridge-harness-setup` is not optional, even if you registered the MCP server by
+> hand.** The MCP server has no way to push: it hands over messages only when the model
+> calls `read`. What wakes an idle session is the `bridge-rewake` Stop hook that setup
+> installs in `~/.claude/settings.json`. Without it the bridge still connects and still
+> receives — messages just pile up unread while every diagnostic reports success. If you
+> are unsure, run `whoami`: it reports `canBeWokenByIncomingMessages`.
+
 **Pi — one command:**
 
 ```bash
@@ -173,7 +180,16 @@ pi install npm:@cocodrino/bridge-harness-pi
 
 ```bash
 omp install @cocodrino/bridge-harness-pi
+omp config set tools.xdev false   # see below — without this the model never sees the tool
 ```
+
+> **oh-my-pi hides extension tools by default.** Its `tools.xdev` setting keeps
+> "rarely-used" tools out of the request to save prompt space, and extension-registered
+> tools get dropped before the model ever sees them. The extension loads, connects, and
+> shows up in `getActiveTools()` — but `agent_bridge` is missing from the tool list in the
+> outgoing request, so the model correctly reports that it does not have it. Turning
+> `tools.xdev` off ships every mounted tool schema on each request, so disable MCP servers
+> you do not use to keep the prompt lean.
 
 Both `pi` and `omp` also pick up the bundled **`agent-bridge` skill** automatically — it's
 declared via the package's `pi.skills` field and loaded through their skills discovery, so
