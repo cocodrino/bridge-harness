@@ -40,6 +40,19 @@ const NATS_CONNECT_OPTIONS = {
   waitOnFirstConnect: true,
 };
 
+/** Publish without allowing a terminally closed connection to crash the Pi process. */
+export function publishIfOpen(connection: NatsConnection | null, subject: string, data: Uint8Array): boolean {
+  if (!connection || connection.isClosed?.()) return false;
+  try {
+    connection.publish(subject, data);
+    return true;
+  } catch (error) {
+    // The connection can close between isClosed() and publish(). Preserve unrelated errors.
+    if (connection.isClosed?.() || (error as { code?: unknown })?.code === "CONNECTION_CLOSED") return false;
+    throw error;
+  }
+}
+
 function getProject(): string {
   if (process.env.BRIDGE_PROJECT) return process.env.BRIDGE_PROJECT;
   const { basename } = require("node:path");
@@ -274,18 +287,27 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   // can find it in. Explicit join_room calls add more rooms here.
   const joinedRooms = new Set<string>([project]);
 
+  function stopPresenceHeartbeat() {
+    if (presenceInterval) {
+      clearInterval(presenceInterval);
+      presenceInterval = null;
+    }
+  }
+
+  function publish(subject: string, data: Uint8Array): boolean {
+    return publishIfOpen(nc, subject, data);
+  }
+
   function publishRegistry(
     type: "join" | "leave" | "room-join" | "room-leave" | "who-there",
     room?: string,
   ) {
-    if (!nc) return;
-    nc.publish(sub.registry(), encode({ type, agentId, displayName, project, room, aliases: [...dmAliases], timestamp: Date.now() }));
+    publish(sub.registry(), encode({ type, agentId, displayName, project, room, aliases: [...dmAliases], timestamp: Date.now() }));
   }
 
   // Identity response to a who-there query, carrying every room we're in.
   function publishHere() {
-    if (!nc) return;
-    nc.publish(
+    publish(
       sub.registry(),
       encode({ type: "here", agentId, displayName, project, rooms: [...joinedRooms], aliases: [...dmAliases], timestamp: Date.now() }),
     );
@@ -423,7 +445,9 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     // Switch project and re-wire (mirrors session_start).
     project = target;
     sub = makeSubjects(project);
-    nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
+    if (!publish(sub.presence(), encode({ agent: agentId, status: "active", project }))) {
+      return "Not connected to NATS";
+    }
     publishRegistry("join");
     publishRegistry("room-join", project);
     await subscribeToIncoming(nc);
@@ -439,8 +463,7 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   // has a TTL) and their `join`/`here` events were not retained, so both sides must
   // re-introduce themselves or they stay mutually invisible despite being connected.
   function announceIdentity() {
-    if (!nc) return;
-    nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
+    if (!publish(sub.presence(), encode({ agent: agentId, status: "active", project }))) return;
     publishRegistry("join");
     for (const room of joinedRooms) publishRegistry("room-join", room);
     publishRegistry("who-there");
@@ -457,7 +480,11 @@ export default function bridgeExtension(pi: ExtensionAPI) {
           console.error("[bridge-harness-pi] Lost the NATS connection — retrying until it returns.");
         }
       }
-    })().catch(() => {});
+    })().catch(() => {}).finally(() => {
+      if (nc !== conn) return;
+      nc = null;
+      stopPresenceHeartbeat();
+    });
   }
 
   pi.on("session_start", async () => {
@@ -466,13 +493,20 @@ export default function bridgeExtension(pi: ExtensionAPI) {
       watchConnectionStatus(nc);
 
       // Register identity
-      nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
+      publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
       publishRegistry("join");
       // Join the project room (shared lobby) by default for presence.
       publishRegistry("room-join", project);
 
       presenceInterval = setInterval(() => {
-        nc?.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
+        try {
+          if (!publish(sub.presence(), encode({ agent: agentId, status: "active", project }))) {
+            stopPresenceHeartbeat();
+          }
+        } catch (error) {
+          stopPresenceHeartbeat();
+          console.error(`[bridge-harness-pi] NATS heartbeat publish failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }, PRESENCE_INTERVAL_MS);
 
       await subscribeToIncoming(nc);
@@ -505,15 +539,16 @@ export default function bridgeExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    if (presenceInterval) {
-      clearInterval(presenceInterval);
-      presenceInterval = null;
-    }
-    if (nc) {
-      publishRegistry("leave");
-      nc.publish(sub.presence(), encode({ agent: agentId, status: "offline", project }));
-      await nc.drain();
-      nc = null;
+    stopPresenceHeartbeat();
+    const connection = nc;
+    if (!connection) return;
+    publishRegistry("leave");
+    publish(sub.presence(), encode({ agent: agentId, status: "offline", project }));
+    nc = null;
+    try {
+      if (!connection.isClosed?.()) await connection.drain();
+    } catch {
+      // The broker may close between the guarded publishes and drain.
     }
   });
 
@@ -647,7 +682,12 @@ export default function bridgeExtension(pi: ExtensionAPI) {
         // peer, since the rewake path only watches bridge.dm.<agentId>.
         const dmTarget = type === "agent" ? (resolveAgent(target)?.agentId ?? target) : target;
         const subject = type === "room" ? sub.room(target) : sub.dm(dmTarget);
-        nc.publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }));
+        if (!publish(subject, encode({ from: agentId, content: message, timestamp: Date.now() }))) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "NATS connection is closed" }) }],
+            details: { error: "NATS connection is closed" },
+          };
+        }
         // NATS core publish always "succeeds" even with no subscriber. Warn when we can't
         // see the recipient so the agent doesn't assume a dropped message was delivered.
         const unknownRecipient = type === "agent" && !resolveAgent(target);
