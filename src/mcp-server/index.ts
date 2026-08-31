@@ -5,7 +5,7 @@ import { connect, type NatsConnection, type Subscription } from "nats";
 import { z } from "zod";
 import {
   getProject,
-  NATS_URL,
+  NATS_CONNECT_OPTIONS,
   PRESENCE_TTL_MS,
   generateAgentId,
   getDisplayName,
@@ -14,6 +14,8 @@ import { subjects } from "../shared/subjects.js";
 import { type AgentPresence, type RegistryEvent } from "../shared/types.js";
 import { ensureNats } from "../nats-manager/index.js";
 import { ensureDmStream } from "../shared/jetstream.js";
+import { rewakeStatus } from "../shared/rewake-hook.js";
+import { applyPresenceEvent, type PresenceEvent } from "../shared/presence.js";
 import { buildAgentCommand } from "../spawn/command.js";
 import { spawnAgentTab } from "../spawn/spawn.js";
 
@@ -122,26 +124,7 @@ async function setupListeners(nc: NatsConnection) {
   (async () => {
     for await (const msg of presenceSub) {
       try {
-        const payload = decode(msg.data) as { agent: string; status: string; project?: string };
-        if (payload.status === "offline") {
-          agentPresence.delete(payload.agent);
-        } else {
-          const existing = agentPresence.get(payload.agent);
-          if (existing) {
-            existing.lastSeen = Date.now();
-            if (payload.project) existing.project = payload.project;
-          } else {
-            agentPresence.set(payload.agent, {
-              agentId: payload.agent,
-              displayName: payload.agent,
-              project: payload.project,
-              rooms: new Set(),
-              aliases: new Set(),
-              joinedAt: Date.now(),
-              lastSeen: Date.now(),
-            });
-          }
-        }
+        applyPresenceEvent(agentPresence, decode(msg.data) as PresenceEvent, agentId);
       } catch {}
     }
   })();
@@ -265,6 +248,11 @@ server.registerTool(
         project,
         rooms: [...activeSubscriptions],
         aliases: [...dmAliases],
+        // Surfaced here because it is the single most consequential thing that can be
+        // wrong while everything else looks healthy: without the hook you receive
+        // messages but are never woken to notice them.
+        canBeWokenByIncomingMessages: rewakeStatus()?.installed ?? true,
+        rewakeWarning: rewakeStatus()?.warning || undefined,
         worktreeHint:
           `Rooms are scoped to "${project}" (the git worktree captured at launch). If your ` +
           `current working directory is a DIFFERENT worktree, run ` +
@@ -464,9 +452,35 @@ server.registerTool(
   }
 );
 
+// Re-broadcast who we are and re-discover peers. Run at boot and again after every
+// reconnect: while we were away, the other agents aged us out of their rosters (presence
+// has a TTL) and their own `join`/`here` events were not retained, so both sides need to
+// re-introduce themselves or they stay mutually invisible despite being connected.
+function announceIdentity() {
+  nc.publish(subjects.presence(), encode({ agent: agentId, status: "active", project }));
+  publishRegistry({ type: "join" });
+  for (const room of activeSubscriptions) publishRegistry({ type: "room-join", room });
+  publishRegistry({ type: "who-there" });
+}
+
+// nats.js restores subscriptions on reconnect but says nothing about it on the wire.
+function watchConnectionStatus(conn: NatsConnection) {
+  (async () => {
+    for await (const status of conn.status()) {
+      if (status.type === "reconnect") {
+        console.error("[bridge-harness] Reconnected to NATS — re-announcing identity.");
+        try { announceIdentity(); } catch {}
+      } else if (status.type === "disconnect") {
+        console.error("[bridge-harness] Lost the NATS connection — retrying until it returns.");
+      }
+    }
+  })().catch(() => {});
+}
+
 async function main() {
   await ensureNats();
-  nc = await connect({ servers: NATS_URL });
+  nc = await connect(NATS_CONNECT_OPTIONS);
+  watchConnectionStatus(nc);
 
   // Provision the durable DM stream (idempotent). If JetStream is disabled on the server,
   // warn and continue — live delivery over core NATS still works, only redelivery is lost.
@@ -477,12 +491,21 @@ async function main() {
       "Run nats-server with -js for reliable wakes. Details:", (err as Error).message);
   }
 
+  // Loud startup check: connecting successfully says nothing about whether this session
+  // can actually be woken. Warn once here so a misconfigured install shows up in the MCP
+  // log instead of presenting as "messages mysteriously never arrive".
+  const rewake = rewakeStatus();
+  if (rewake && !rewake.installed) {
+    console.error(`[bridge-harness] ${rewake.warning}`);
+  }
+
   await setupListeners(nc);
 
   // Announce presence + identity
   nc.publish(subjects.presence(), encode({ agent: agentId, status: "active", project }));
   publishRegistry({ type: "join" });
   // Join the project room (shared lobby) by default — subscribes, announces presence,
+  // (subscribeToRoom below registers the room, so reconnect re-announces it too)
   // and broadcasts who-there to discover agents that connected before us (registry
   // events aren't retained). Keeps Claude visible in the same default room as Pi.
   await subscribeToRoom(project);

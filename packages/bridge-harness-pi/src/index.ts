@@ -30,6 +30,16 @@ const { connect } = loadNats() as { connect: (...args: any[]) => Promise<NatsCon
 const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
 const PRESENCE_INTERVAL_MS = 30_000;
 
+// nats.js gives up after 10 reconnect attempts by default and closes the connection.
+// A Pi session outlives any broker restart, so giving up would leave it permanently deaf.
+// Retry forever — an idle reconnect loop costs nothing and there is no other transport.
+const NATS_CONNECT_OPTIONS = {
+  servers: NATS_URL,
+  maxReconnectAttempts: -1,
+  reconnectTimeWait: 2_000,
+  waitOnFirstConnect: true,
+};
+
 function getProject(): string {
   if (process.env.BRIDGE_PROJECT) return process.env.BRIDGE_PROJECT;
   const { basename } = require("node:path");
@@ -424,9 +434,36 @@ export default function bridgeExtension(pi: ExtensionAPI) {
     return `Switched to project "${target}" (from "${oldProject}") for rooms. Note: DMs already reach any agent by ID across projects — use_bridge is only needed to share a room.`;
   }
 
+  // Re-broadcast who we are and re-discover peers. Run at boot and again after every
+  // reconnect: while we were away the other agents aged us out of their rosters (presence
+  // has a TTL) and their `join`/`here` events were not retained, so both sides must
+  // re-introduce themselves or they stay mutually invisible despite being connected.
+  function announceIdentity() {
+    if (!nc) return;
+    nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
+    publishRegistry("join");
+    for (const room of joinedRooms) publishRegistry("room-join", room);
+    publishRegistry("who-there");
+  }
+
+  // nats.js restores subscriptions on reconnect but says nothing about it on the wire.
+  function watchConnectionStatus(conn: NatsConnection) {
+    (async () => {
+      for await (const status of conn.status()) {
+        if (status.type === "reconnect") {
+          console.error("[bridge-harness-pi] Reconnected to NATS — re-announcing identity.");
+          try { announceIdentity(); } catch {}
+        } else if (status.type === "disconnect") {
+          console.error("[bridge-harness-pi] Lost the NATS connection — retrying until it returns.");
+        }
+      }
+    })().catch(() => {});
+  }
+
   pi.on("session_start", async () => {
     try {
-      nc = await connect({ servers: NATS_URL });
+      nc = await connect(NATS_CONNECT_OPTIONS);
+      watchConnectionStatus(nc);
 
       // Register identity
       nc.publish(sub.presence(), encode({ agent: agentId, status: "active", project }));
