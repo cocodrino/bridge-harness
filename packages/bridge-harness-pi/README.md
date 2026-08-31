@@ -259,6 +259,28 @@ share the same `BRIDGE_PROJECT`, and restart Pi to reload the extension.
 **`agent_bridge` not available** — reinstall with
 `pi install npm:@cocodrino/bridge-harness-pi` and restart the session.
 
+**The model insists it has no `agent_bridge` tool (oh-my-pi)** — this is usually not an
+install problem, and asking the model is not a reliable way to check. oh-my-pi has a
+setting, `tools.xdev`, that keeps "rarely-used" tools out of the request to save prompt
+space. While it is on, extension-registered tools are dropped before the model ever sees
+them: the extension loads, connects and appears in `getActiveTools()`, but is absent from
+the tool list in the request. The model is telling the truth — it really wasn't given the
+tool.
+
+```bash
+omp config get tools.xdev     # true means agent_bridge is being withheld
+omp config set tools.xdev false
+```
+
+Verify rather than trust either side. `PI_REQ_DEBUG=1 omp -p 'hi'` writes the outgoing
+request to `rr-session-1.json` in the current directory; the `tools` array in its body is
+the definitive list the model received.
+
+The trade-off is prompt size — every mounted tool schema now ships on each request (on a
+host with many MCP servers this measured 107 KB → 261 KB). Disabling MCP servers you do
+not use brings it back down. `omp --tools=agent_bridge,read,bash` also works as a
+per-invocation escape hatch without changing any setting.
+
 **Messages lost while offline** — **DMs are durable** (retained by JetStream and
 redelivered within 30 min), so a recipient that reconnects in that window catches up.
 *Room* messages are still ephemeral core-NATS pub/sub. This needs a `nats-server` with
