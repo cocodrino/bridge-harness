@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -11,21 +12,73 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type NatsConnection = any;
 type Subscription = any;
 
-// Resolve nats from this file's real path (the package's node_modules), not the symlink
-// dir. Falls back progressively if the host exposes import.meta / require differently.
-function loadNats(): any {
+// Some Bun-based hosts (e.g. omp, Bun <= 1.4.x) cannot resolve bare specifiers whose
+// package name contains a dot: `require("nkeys.js")` is misread as a file path, so
+// loading `nats` dies with "Cannot find module 'nkeys.js'" deep inside nats-base-client.
+// Node resolves those fine, so patch only when the bug is present: probe with
+// require.resolve("nkeys.js") from this package's node_modules; if it throws, install a
+// Module._resolveFilename hook mapping that one bare specifier to nkeys.js/nkeys.mjs (a
+// self-contained ESM bundle — its lib/index.js + tweetnacl chain never enters the
+// picture), located next to nats (npm hoists nkeys.js as nats' only runtime dep).
+// The hook rewrites only this specifier; everything else passes through untouched.
+type PatchableModule = {
+  _resolveFilename?: (request: never, ...rest: unknown[]) => unknown;
+} & Record<string, unknown>;
+
+function installDottedSpecifierFallback(): void {
+  let req: NodeRequire;
   try {
-    return createRequire(realpathSync(fileURLToPath(import.meta.url)))("nats");
+    req = createRequire(realpathSync(fileURLToPath(import.meta.url)));
   } catch {
-    try {
-      return createRequire(import.meta.url)("nats");
-    } catch {
-      return require("nats");
-    }
+    req = createRequire(import.meta.url);
+  }
+
+  // Already resolvable (Node, or a fixed Bun): nothing to do.
+  try {
+    req.resolve("nkeys.js");
+    return;
+  } catch {
+    // Not resolvable — probe whether we can patch.
+  }
+
+  try {
+    const nkeysEntry = join(dirname(req.resolve("nats")), "..", "nkeys.js", "nkeys.mjs");
+    if (!existsSync(nkeysEntry)) return;
+    const nodeModule = require("node:module") as PatchableModule;
+    const orig = nodeModule._resolveFilename;
+    if (typeof orig !== "function") return;
+    nodeModule._resolveFilename = (request: never, ...rest: unknown[]) =>
+      request === "nkeys.js" ? nkeysEntry : orig(request, ...rest);
+  } catch {
+    // Host without a patchable module loader: leave resolution as-is; loadNats() will
+    // surface the original error if nats genuinely can't load.
   }
 }
 
-const { connect } = loadNats() as { connect: (...args: any[]) => Promise<NatsConnection> };
+// Resolve nats from this file's real path (the package's node_modules), not the symlink
+// dir. Falls back progressively if the host exposes import.meta / require differently.
+function loadNats(): { connect: (opts: Record<string, unknown>) => Promise<NatsConnection> } {
+  installDottedSpecifierFallback();
+  // Prefer this file's REAL path (the package's node_modules, not the symlink dir);
+  // every base is tried independently so a realpath failure doesn't skip the rest.
+  const bases: (string | URL)[] = [];
+  try {
+    bases.push(realpathSync(fileURLToPath(import.meta.url)));
+  } catch {
+    // realpath unavailable — fall through to the raw URL
+  }
+  bases.push(import.meta.url);
+  for (const base of bases) {
+    try {
+      return createRequire(base)("nats");
+    } catch {
+      // try next base
+    }
+  }
+  return require("nats");
+}
+
+const { connect } = loadNats();
 
 const NATS_URL = process.env.BRIDGE_NATS_URL ?? "nats://localhost:4222";
 const PRESENCE_INTERVAL_MS = 30_000;
